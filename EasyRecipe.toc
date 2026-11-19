@@ -1,0 +1,23 @@
+## Interface: 16001
+## Title: EasyRecipe
+## Notes: Hover a reagent to see which of your recipes use it.
+## Notes-ptBR: Passe o mouse sobre um reagente para ver quais das suas receitas o utilizam.
+## Version: @project-version@
+## Category: Professions
+## Category-ptBR: Profissões
+## IconTexture: Interface\Icons\INV_Scroll_03
+## SavedVariables: EasyRecipeDB
+## SavedVariablesPerCharacter: EasyRecipeCharDB
+
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+
+Locales.lua
+Core.lua
+Scanner.lua
+Tooltip.lua
+Options.lua
+Minimap.lua
+Intro.lua
