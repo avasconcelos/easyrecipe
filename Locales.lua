@@ -61,6 +61,9 @@ local L = {
     BOOK_EMPTY_ALMOST = "No recipe with only some of its reagents in your bags and bank.",
     BOOK_EMPTY_ALL = "No recipes yet: open each of your profession windows once.",
     BOOK_EMPTY_BEASTS = "No creatures yet: they are listed as you loot them.",
+    BOOK_UNPLACED = "Unidentified",
+    BOOK_FORGET = "Clear these creatures",
+    BOOK_FORGET_CONFIRM = "Forget the %d creatures with no known place, and what they dropped?",
     INTRO_TITLE = "Welcome to EasyRecipe",
     INTRO_TEXT = "EasyRecipe learns along with your character: it starts empty and fills in as you play.\n\n"
         .. "1. Open each of your profession windows once, so your recipes can be recorded.\n\n"
@@ -143,6 +146,9 @@ if GetLocale() == "ptBR" then
     L.BOOK_EMPTY_ALMOST = "Nenhuma receita com só parte dos reagentes na bolsa e no banco."
     L.BOOK_EMPTY_ALL = "Nenhuma receita ainda: abra a janela de cada profissão uma vez."
     L.BOOK_EMPTY_BEASTS = "Nenhuma criatura ainda: elas aparecem conforme você saqueia."
+    L.BOOK_UNPLACED = "Não identificado"
+    L.BOOK_FORGET = "Limpar estas criaturas"
+    L.BOOK_FORGET_CONFIRM = "Esquecer as %d criaturas sem local conhecido e o que elas deixaram cair?"
     L.INTRO_TITLE = "Bem-vindo ao EasyRecipe"
     L.INTRO_TEXT = "O EasyRecipe aprende junto com o seu personagem: começa vazio e vai se completando enquanto você joga.\n\n"
         .. "1. Abra a janela de cada profissão uma vez, para que suas receitas sejam registradas.\n\n"

@@ -147,6 +147,15 @@ local function InstallGame()
     GetLootSourceInfo = function(slot) return unpack(Slot(slot).sources or {}) end
     IsFishingLoot = function() return game.loot.fishing end
     GetRealZoneText = function() return game.zone end
+    GetSubZoneText = function() return game.subzone or "" end
+    C_Map = {
+        GetBestMapForUnit = function() return game.position and 52 end,
+        GetMapInfo = function() return { name = game.mapName } end,
+        GetPlayerMapPosition = function()
+            local p = game.position
+            return p and { GetXY = function() return p[1], p[2] end }
+        end,
+    }
     UnitGUID = function(unit) return game.units[unit] and game.units[unit].guid end
     UnitName = function(unit) return game.units[unit] and game.units[unit].name end
     -- A frame, button or font string. Layout calls are accepted and ignored.
@@ -788,10 +797,11 @@ check(Printed("Loot recorded from 2 kinds of creatures and 1 fishing spots."), "
 local CRAB, CLAM, CLAM_MEAT, CLAM_GUID = 830, 5523, 5503, "Item-0-0-0-00000ABC"
 game.items[CLAM], game.items[CLAM_MEAT] = 0, 0
 game.reagents[CLAM_MEAT] = true
-game.zone = "Westfall"
+game.zone, game.subzone, game.position = "Westfall", "The Dagger Hills", { 0.4512, 0.7988 }
 game.units.target = { guid = CorpseGUID(CRAB, 1), name = "Sand Crab" }
 Loot({ From({ item = CLAM, name = "Small Barnacled Clam", icon = 134432, quality = 1 }, CorpseGUID(CRAB, 1), 1) })
 game.units.target = nil
+game.subzone, game.position = nil, nil
 game.itemGUIDs[CLAM_GUID] = CLAM
 local MEAT_SLOT = { item = CLAM_MEAT, name = "Clam Meat", icon = 133912, quality = 1 }
 Loot({ From(MEAT_SLOT, CLAM_GUID, 1) })
@@ -805,6 +815,16 @@ check(HasLine(HoverUnit(CorpseGUID(CRAB, 2), "Sand Crab"), "Small Barnacled Clam
     "the reagent filter keeps items that open into something")
 equal(ns.LootSource("npc:" .. CRAB).zones.Westfall, true, "a creature remembers the zone it was looted in")
 check(ns.LootSource("item:" .. CLAM).zones == nil, "an opened item has no zone")
+-- A client that gives no zone text: the map names it, and a creature
+-- hovered there is placed without looting it again.
+game.zone, game.mapName, game.position = nil, "Darkshore", { 0.5, 0.25 }
+HoverUnit(CorpseGUID(CRAB, 3), "Sand Crab")
+local darkshore = ns.LootSource("npc:" .. CRAB).places.Darkshore
+check(darkshore and darkshore[""] and darkshore[""][1] == 50 and darkshore[""][2] == 25, "the map's zone and position are used")
+game.position = { 0.9, 0.9 }
+HoverUnit(CorpseGUID(CRAB, 3), "Sand Crab")
+equal(darkshore[""][1], 50, "hovering does not move a place already known")
+game.zone, game.mapName, game.position = "Westfall", nil, nil
 
 -- The recipe book counts the bags and the bank.
 local function BookLine(mode, text)
@@ -814,9 +834,20 @@ local function BookLine(mode, text)
 end
 game.bags[COPPER_BAR], game.bank[FLUX] = 8, 2
 local lines = ns.BookLines("craftable")
-equal(lines[1].text, "Blacksmithing", "recipes grouped by profession")
+check(lines[1].text:find("Blacksmithing", 1, true) and lines[1].toggle, "recipes grouped by profession, which close")
+check(BookLine("craftable", "Copper Chain Pants"), "professions start open")
+ns.ToggleBookEntry(lines[1].toggle)
+check(not BookLine("craftable", "Copper Chain Pants"), "a closed profession hides its recipes")
+ns.ToggleBookEntry(lines[1].toggle)
 check(BookLine("craftable", "Copper Chain Pants  x2"), "how many times it can be made")
 check(BookLine("craftable", "Copper Axe  x1"), "the bank counts")
+local axe = BookLine("craftable", "Copper Axe  x1")
+check(axe.toggle and axe.itemID, "a recipe closes, and still shows its item")
+ns.ToggleBookEntry(axe.toggle)
+local axeAt = select(2, BookLine("craftable", "Copper Axe  x1"))
+local nextLine = ns.BookLines("craftable")[axeAt + 1]
+check(not nextLine or nextLine.indent < 2, "a closed recipe hides its reagents")
+ns.ToggleBookEntry(axe.toggle)
 local flux = BookLine("craftable", "#2880  2/2")
 check(flux and flux.color[2] == 1 and flux.indent == 2 and flux.itemID == FLUX, "a reagent that is there is green")
 check(not BookLine("craftable", "Rough Sharpening Stone"), "nothing to make it with: not craftable")
@@ -830,13 +861,39 @@ SetOption("profession_Blacksmithing", false)
 equal(ns.BookLines("all")[1].text, "No recipes yet: open each of your profession windows once.", "the book follows the filters")
 SetOption("profession_Blacksmithing", true)
 
+EasyRecipeDB.loot.sources["npc:999"] = { kind = "npc", name = "Old Bear", looted = 1, items = {} }
+local westfall = BookLine("beasts", "Westfall")
+check(westfall and westfall.toggle and westfall.indent == 0, "beasts are under their zone")
+check(not BookLine("beasts", "Sand Crab"), "zones start closed")
+ns.ToggleBookEntry(westfall.toggle)
+local hills = BookLine("beasts", "The Dagger Hills")
+check(hills and hills.indent == 1, "then their subzone, open")
 local crab, at = BookLine("beasts", "Sand Crab")
-check(crab and crab.text:find("Westfall", 1, true), "a beast is listed with its zone")
+check(crab.indent == 1 and not crab.text:find("%d+%.%d"), "where the zone has no subzone, right under it, with no position known")
+crab, at = nil, nil
+for i, line in ipairs(ns.BookLines("beasts")) do
+    if line.text:find("Sand Crab", 1, true) and line.indent == 2 then crab, at = line, i end
+end
+check(crab and crab.text:find("45.1, 79.9", 1, true), "in a subzone, with where on the map it was looted")
+check(not BookLine("beasts", "Small Barnacled Clam"), "beasts start closed")
+ns.ToggleBookEntry(crab.toggle)
 lines = ns.BookLines("beasts")
-check(lines[at + 1].text:find("Small Barnacled Clam", 1, true) and lines[at + 1].indent == 1, "then what it drops")
-check(lines[at + 2].text:find("Clam Meat", 1, true) and lines[at + 2].indent == 2, "and what that opens into")
-check(BookLine("beasts", "Fishing: Elwynn Forest"), "fishing spots are listed too")
+for i, line in ipairs(lines) do
+    if line.text:find("Sand Crab", 1, true) and line.indent == 2 then at = i end
+end
+check(lines[at + 1].text:find("Small Barnacled Clam", 1, true) and lines[at + 1].indent == 3, "open, what it drops")
+check(lines[at + 2].text:find("Clam Meat", 1, true) and lines[at + 2].indent == 4, "and what that opens into")
+check(BookLine("beasts", "Darkshore"), "a beast found in two zones is under both")
+check(BookLine("beasts", "Elwynn Forest"), "fishing spots are listed too")
 check(not BookLine("beasts", "Small Barnacled Clam (from"), "opened items are not beasts of their own")
+local unplaced = BookLine("beasts", "Unidentified")
+check(unplaced and unplaced.text:find("(1)", 1, true), "beasts with no known place are apart")
+ns.ToggleBookEntry(unplaced.toggle)
+local forget = BookLine("beasts", "Clear these creatures")
+check(forget and forget.action == "forget" and BookLine("beasts", "Old Bear"), "with a way to clear them")
+ns.BookAction(forget.action)
+check(not BookLine("beasts", "Unidentified") and not ns.LootSource("npc:999"), "cleared, they are gone")
+check(ns.LootSource("npc:" .. CRAB), "and the others stay")
 
 -- A game that does not count the bank while it is closed: what it held when open stands in.
 game.bags[COPPER_BAR] = 0

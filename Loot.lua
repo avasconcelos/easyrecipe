@@ -7,10 +7,11 @@ local ITEM_SLOT = Enum and Enum.LootSlotType and Enum.LootSlotType.Item or 1
 local CORPSE_UNITS = { "mouseover", "target" }
 
 -- Account-wide: a kind of creature drops the same things for every character.
--- sources: key -> { kind = "npc" | "fish" | "item", name, looted, zones, items = { [itemID] = times dropped } }
+-- sources: key -> { kind = "npc" | "fish" | "item", name, looted, zones, places, items = { [itemID] = times dropped } }
 --   keyed "npc:<npcID>", "fish:<zone>" or "item:<itemID>" for what opens, such
---   as clams; `looted` counts corpses, catches or openings, and `zones` holds
---   the zones a creature was looted in.
+--   as clams; `looted` counts corpses, catches or openings, `zones` holds
+--   the zones a creature was looted in, and `places` zone -> subzone ->
+--   { x, y }, the map position of the last loot there ("" for no subzone).
 -- items: itemID -> { name, icon, quality, reagent } as the loot window showed it.
 local loot
 
@@ -59,10 +60,66 @@ local function RecentlyOpened()
     if lastUsed and GetTime() - lastUsedAt <= USE_WINDOW then return lastUsed end
 end
 
-local function Zone()
-    local zone = GetRealZoneText and GetRealZoneText()
-    if zone ~= nil and not IsSecret(zone) and zone ~= "" then return zone end
+local function Text(fn, ...)
+    if not fn then return end
+    local ok, text = pcall(fn, ...)
+    if ok and text ~= nil and not IsSecret(text) and type(text) == "string" and text ~= "" then return text end
 end
+
+local function MapID()
+    local map = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+    if type(map) == "number" and not IsSecret(map) then return map end
+end
+
+-- The zone and subzone ("" for none). Not every client answers every one of
+-- these, nor at every moment, so the last ones read stand in.
+local lastZone, lastSubZone
+local function Zone()
+    local zone = Text(GetRealZoneText) or Text(GetZoneText)
+    if not zone and MapID() and C_Map.GetMapInfo then
+        local info = C_Map.GetMapInfo(MapID())
+        zone = info and Text(function() return info.name end)
+    end
+    if zone then
+        lastZone = zone
+        local sub = Text(GetSubZoneText) or Text(GetMinimapZoneText) or ""
+        lastSubZone = sub == zone and "" or sub
+    end
+    return lastZone, lastSubZone or ""
+end
+
+-- The player's position on the zone map, 0 to 100, or nil where the map has
+-- none, such as in dungeons.
+local function Position()
+    local map = MapID()
+    if not map or not C_Map.GetPlayerMapPosition then return end
+    local ok, position = pcall(C_Map.GetPlayerMapPosition, map, "player")
+    if not (ok and position and position.GetXY) then return end
+    local x, y = position:GetXY()
+    if type(x) ~= "number" or type(y) ~= "number" or IsSecret(x) or IsSecret(y) or (x == 0 and y == 0) then return end
+    return math.floor(x * 1000 + 0.5) / 10, math.floor(y * 1000 + 0.5) / 10
+end
+
+-- Where a source is, from where the player stands. Unless `always`, a place
+-- already known is left as it is.
+local function RememberPlace(source, always)
+    local zone, sub = Zone()
+    if not zone then return end
+    source.zones = source.zones or {}
+    source.zones[zone] = true
+    source.places = source.places or {}
+    local subzones = source.places[zone] or {}
+    source.places[zone] = subzones
+    if subzones[sub] and not always then return end
+    local x, y = Position()
+    subzones[sub] = x and { x, y } or subzones[sub] or {}
+end
+
+local zoneWatcher = CreateFrame("Frame")
+for _, event in ipairs({ "PLAYER_ENTERING_WORLD", "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA" }) do
+    zoneWatcher:RegisterEvent(event)
+end
+zoneWatcher:SetScript("OnEvent", function() Zone() end)
 
 local function SortDrops(itemID)
     local sources = loot.sources
@@ -104,6 +161,10 @@ function ns.InitLoot()
         else
             if type(source.name) ~= "string" then source.name = nil end
             if type(source.zones) ~= "table" then source.zones = nil end
+            if type(source.places) ~= "table" then source.places = nil end
+            for zone, subzones in pairs(source.places or {}) do
+                if type(zone) ~= "string" or type(subzones) ~= "table" then source.places[zone] = nil end
+            end
             for itemID, times in pairs(source.items) do
                 if type(itemID) ~= "number" or type(times) ~= "number" then source.items[itemID] = nil end
             end
@@ -121,6 +182,27 @@ function ns.ResetLoot()
     wipe(dropIndex)
     wipe(seenCorpses)
     wipe(seenDrops)
+end
+
+local function Unplaced(source)
+    return source.kind ~= "item" and not (source.places and next(source.places))
+end
+
+-- Creatures and fishing spots with no known place, such as those recorded
+-- before places were, and how many there are.
+function ns.UnplacedCount()
+    local count = 0
+    for _, source in pairs(loot.sources) do
+        if Unplaced(source) then count = count + 1 end
+    end
+    return count
+end
+
+function ns.ForgetUnplaced()
+    for key, source in pairs(loot.sources) do
+        if Unplaced(source) then loot.sources[key] = nil end
+    end
+    ns.RebuildLootIndex()
 end
 
 -- Kinds of creatures and fishing spots recorded.
@@ -199,6 +281,7 @@ local function RecordFishing(count)
     local key = "fish:" .. zone
     local source = Source(key, "fish", zone)
     source.looted = source.looted + 1
+    RememberPlace(source, true)
     for slot = 1, count do
         local itemID = SlotItem(slot)
         if itemID then
@@ -209,7 +292,6 @@ local function RecordFishing(count)
 end
 
 local function RecordSources(count)
-    local zone = Zone()
     -- One window is one opening: a stack of clams keeps its GUID, so openings
     -- are not told apart by it.
     local opened, known = {}, false
@@ -242,12 +324,9 @@ local function RecordSources(count)
             elseif npcID then
                 local key = "npc:" .. npcID
                 local source = Source(key, "npc", NameOf(guid))
-                if zone then
-                    source.zones = source.zones or {}
-                    source.zones[zone] = true
-                end
                 if not seenCorpses[guid] then
                     seenCorpses[guid] = true
+                    RememberPlace(source, true)
                     source.looted = source.looted + 1
                 end
                 local drop = itemID and guid .. ":" .. itemID
@@ -378,6 +457,8 @@ local function OnUnitTooltip(tooltip, data)
         local name = tooltip:GetUnit()
         if name ~= nil and not IsSecret(name) and type(name) == "string" and name ~= "" then source.name = name end
     end
+    -- A creature in sight is near: where it lives is learned without looting it again.
+    RememberPlace(source)
     if not db.lootOnUnit or source.looted == 0 then return end
 
     local list = ns.SourceItems(source)

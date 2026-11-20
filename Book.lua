@@ -1,7 +1,7 @@
 local _, ns = ...
 local L = ns.L
 
-local WIDTH, HEIGHT, ROW_HEIGHT, INDENT = 460, 520, 16, 16
+local WIDTH, HEIGHT, ROW_HEIGHT, INDENT = 480, 540, 18, 16
 -- Tab, its label; the first is shown when the book opens for the first time.
 local TABS = {
     { "craftable", "BOOK_CRAFTABLE" },
@@ -14,9 +14,14 @@ local GOLD, GRAY = { 1, 0.82, 0 }, { 0.6, 0.6, 0.6 }
 
 local GetItemCount = C_Item and C_Item.GetItemCount or GetItemCount
 
+local PLUS, MINUS = [[Interface\Buttons\UI-PlusButton-Up]], [[Interface\Buttons\UI-MinusButton-Up]]
+
 local window, content
 local rows = {}
 local tab = "craftable"
+-- Headers clicked open or closed this session: beasts start closed, as there
+-- may be hundreds, and professions open.
+local toggled = {}
 
 local function Count(itemID, includeBank)
     local count = GetItemCount and GetItemCount(itemID, includeBank)
@@ -100,6 +105,23 @@ local function Line(lines, text, color, indent, itemID)
     lines[#lines + 1] = { text = text, color = color, indent = indent or 0, itemID = itemID }
 end
 
+local function IsOpen(key, openByDefault)
+    if toggled[key] then return not openByDefault end
+    return openByDefault
+end
+
+-- A line that opens or closes what is under it; returns whether it is open.
+local function Header(lines, text, color, key, openByDefault, indent, itemID)
+    local open = IsOpen(key, openByDefault)
+    Line(lines, "|T" .. (open and MINUS or PLUS) .. ":16|t " .. text, color, indent, itemID)
+    lines[#lines].toggle = key
+    return open
+end
+
+function ns.ToggleBookEntry(key)
+    toggled[key] = not toggled[key] or nil
+end
+
 local function SortedKeys(map)
     local keys = {}
     for key in pairs(map) do
@@ -144,15 +166,16 @@ local function RecipeLines(lines, mode)
         end
     end
     for _, profession in ipairs(SortedKeys(byProfession)) do
-        Line(lines, profession, GOLD)
         local list = byProfession[profession]
+        local open = Header(lines, ("%s  |cff999999(%d)|r"):format(profession, #list), GOLD, "prof:" .. profession, true)
         table.sort(list, CompareRecipes)
-        for _, recipeID in ipairs(list) do
+        for _, recipeID in ipairs(open and list or {}) do
             local recipe = ns.recipes[recipeID]
             local text = WithIcon(recipe.name, recipe.icon)
             if times[recipeID] > 0 then text = text .. "  x" .. times[recipeID] end
-            Line(lines, text, ns.DIFFICULTY_COLOR[recipe.diff] or ns.NO_DIFFICULTY_COLOR, 1, recipe.out)
-            for _, itemID in ipairs(SortedKeys(recipe.reagents)) do
+            local open = Header(lines, text, ns.DIFFICULTY_COLOR[recipe.diff] or ns.NO_DIFFICULTY_COLOR,
+                "recipe:" .. recipeID, true, 1, recipe.out)
+            for _, itemID in ipairs(open and SortedKeys(recipe.reagents) or {}) do
                 local need, have = recipe.reagents[itemID], Have(itemID)
                 local name, icon = ns.ItemDisplay(itemID)
                 Line(lines, ("%s  %d/%d"):format(WithIcon(name, icon), have, need),
@@ -174,14 +197,98 @@ local function ItemLines(lines, source, indent, depth)
     end
 end
 
-local function BeastLines(lines)
-    for _, key in ipairs(ns.Beasts()) do
-        local source = ns.LootSource(key)
-        local text = ns.SourceName(key, source)
-        if source.zones then text = text .. "  |cff999999" .. table.concat(SortedKeys(source.zones), ", ") .. "|r" end
-        Line(lines, text .. "  |cff999999(" .. L.BOOK_LOOTED:format(source.looted) .. ")|r", GOLD)
-        ItemLines(lines, source, 1, 0)
+local function Gray(text)
+    return "  |cff999999" .. text .. "|r"
+end
+
+-- A beast, where on the map it was last looted there, and what it drops.
+local function BeastLine(lines, key, at, indent)
+    local source = ns.LootSource(key)
+    local text = ns.SourceName(key, source)
+    if type(at) == "table" and at[1] and at[2] then text = text .. Gray(("%.1f, %.1f"):format(at[1], at[2])) end
+    text = text .. Gray("(" .. L.BOOK_LOOTED:format(source.looted) .. ")")
+    if Header(lines, text, { 1, 1, 1 }, key, false, indent) then
+        ItemLines(lines, source, indent + 1, 0)
     end
+end
+
+-- Zone, then subzone, then the beasts found there; a beast found in several
+-- places is under each. Those with no known place come last.
+local function BeastLines(lines)
+    local tree, unplaced = {}, {}
+    for _, key in ipairs(ns.Beasts()) do
+        local places = ns.LootSource(key).places
+        if places and next(places) then
+            for zone, subzones in pairs(places) do
+                tree[zone] = tree[zone] or {}
+                for sub in pairs(subzones) do
+                    tree[zone][sub] = tree[zone][sub] or {}
+                    table.insert(tree[zone][sub], key)
+                end
+            end
+        else
+            unplaced[#unplaced + 1] = key
+        end
+    end
+    for _, zone in ipairs(SortedKeys(tree)) do
+        local subzones, keys = tree[zone], {}
+        for _, list in pairs(subzones) do
+            for _, key in ipairs(list) do keys[key] = true end
+        end
+        local count = #SortedKeys(keys)
+        if Header(lines, zone .. Gray("(" .. count .. ")"), GOLD, "zone:" .. zone, false) then
+            -- Beasts found where the zone has no subzone come first, right under it.
+            for _, sub in ipairs(SortedKeys(subzones)) do
+                local indent = 1
+                if sub ~= "" then
+                    indent = 2
+                    if not Header(lines, sub .. Gray("(" .. #subzones[sub] .. ")"), GOLD, "sub:" .. zone .. ":" .. sub, true, 1) then
+                        indent = nil
+                    end
+                end
+                for _, key in ipairs(indent and subzones[sub] or {}) do
+                    BeastLine(lines, key, ns.LootSource(key).places[zone][sub], indent)
+                end
+            end
+        end
+    end
+    if #unplaced > 0 then
+        if Header(lines, L.BOOK_UNPLACED .. Gray("(" .. #unplaced .. ")"), GRAY, "unplaced", false) then
+            Line(lines, L.BOOK_FORGET, MISSING_COLOR, 1)
+            lines[#lines].action = "forget"
+            for _, key in ipairs(unplaced) do
+                BeastLine(lines, key, nil, 1)
+            end
+        end
+    end
+end
+
+local function Forget()
+    ns.ForgetUnplaced()
+    ns.RefreshBook()
+end
+
+local ACTIONS = {
+    forget = function()
+        if StaticPopupDialogs and StaticPopup_Show then
+            StaticPopupDialogs.EASYRECIPE_FORGET = StaticPopupDialogs.EASYRECIPE_FORGET or {
+                text = L.BOOK_FORGET_CONFIRM,
+                button1 = YES,
+                button2 = NO,
+                OnAccept = Forget,
+                timeout = 0,
+                whileDead = true,
+                hideOnEscape = true,
+            }
+            StaticPopup_Show("EASYRECIPE_FORGET", ns.UnplacedCount())
+        else
+            Forget()
+        end
+    end,
+}
+
+function ns.BookAction(name)
+    ACTIONS[name]()
 end
 
 local EMPTY = { craftable = "BOOK_EMPTY_CRAFTABLE", almost = "BOOK_EMPTY_ALMOST", all = "BOOK_EMPTY_ALL",
@@ -206,6 +313,8 @@ local function ShowItemTooltip(row)
     GameTooltip:Show()
 end
 
+local Refresh
+
 local function Row(i)
     local row = rows[i]
     if not row then
@@ -213,17 +322,25 @@ local function Row(i)
         row:SetHeight(ROW_HEIGHT)
         row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -(i - 1) * ROW_HEIGHT)
         row:SetPoint("TOPRIGHT", content, "TOPRIGHT", 0, -(i - 1) * ROW_HEIGHT)
-        row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         row.label:SetJustifyH("LEFT")
         row.label:SetWordWrap(false)
         row:SetScript("OnEnter", ShowItemTooltip)
         row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        row:SetScript("OnClick", function(self)
+            if self.action then
+                ns.BookAction(self.action)
+            elseif self.toggle then
+                ns.ToggleBookEntry(self.toggle)
+                Refresh()
+            end
+        end)
         rows[i] = row
     end
     return row
 end
 
-local function Refresh()
+function Refresh()
     if not (window and window:IsShown()) then return end
     local lines = ns.BookLines(tab)
     for i, line in ipairs(lines) do
@@ -234,6 +351,8 @@ local function Refresh()
         row.label:SetText(line.text)
         row.label:SetTextColor(line.color[1], line.color[2], line.color[3])
         row.itemID = line.itemID
+        row.toggle = line.toggle
+        row.action = line.action
         row:Show()
     end
     for i = #lines + 1, #rows do
@@ -246,6 +365,8 @@ local function Refresh()
 end
 
 -- Bag updates come in bursts while looting or crafting.
+ns.RefreshBook = function() Refresh() end
+
 local queued = false
 local function QueueRefresh()
     if queued then return end
