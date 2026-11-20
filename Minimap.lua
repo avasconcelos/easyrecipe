@@ -17,10 +17,17 @@ function ns.SetupMinimap()
         type = "launcher",
         text = NAME,
         icon = ICON,
-        OnClick = function() ns.OpenOptions() end,
+        OnClick = function(_, mouseButton)
+            if mouseButton == "RightButton" then
+                ns.OpenOptions()
+            else
+                ns.Try(ns.ToggleBook)
+            end
+        end,
         OnTooltipShow = function(tooltip)
             tooltip:AddLine(NAME)
-            tooltip:AddLine(L.MINIMAP_CLICK, 1, 1, 1)
+            tooltip:AddLine(L.MINIMAP_LEFT, 1, 1, 1)
+            tooltip:AddLine(L.MINIMAP_RIGHT, 1, 1, 1)
         end,
     })
     if launcher then icons:Register(NAME, launcher, ns.db.minimap) end

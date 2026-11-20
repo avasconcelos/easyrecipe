@@ -1,2 +1,5 @@
 # Fetched by the packager (see .pkgmeta).
 /Libs/
+
+# Zips built by hand for upload.
+/dist/

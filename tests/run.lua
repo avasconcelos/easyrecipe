@@ -20,6 +20,9 @@ end
 -- The game
 ---------------------------------------------------------------------------
 local COPPER_BAR, COARSE_STONE, FLUX, LINEN = 2840, 2836, 2880, 2589
+local WOLF_MEAT, LIGHT_LEATHER, RABBIT_FOOT, MUD_SNAPPER = 2672, 2318, 2589 + 1, 6289
+local WOLF, BOAR = 299, 113
+local function CorpseGUID(npcID, spawn) return ("Creature-0-1-0-12-%d-%08X"):format(npcID, spawn) end
 
 local game = {}
 local function ResetGame()
@@ -63,7 +66,20 @@ local function ResetGame()
     }
     -- itemID -> level required to use it, for the items the client has data for.
     -- An item anyone can use has level 0.
-    game.items = { [2862] = 1, [2852] = 0, [3469] = 5, [2845] = 9, [3488] = 13 }
+    game.items = { [2862] = 1, [2852] = 0, [3469] = 5, [2845] = 9, [3488] = 13,
+        [WOLF_MEAT] = 0, [LIGHT_LEATHER] = 0, [RABBIT_FOOT] = 0, [MUD_SNAPPER] = 5 }
+    game.reagents = { [WOLF_MEAT] = true, [LIGHT_LEATHER] = true, [MUD_SNAPPER] = true }
+    -- The open loot window: slots of { item, name, icon, quality, money, sources = { guid, amount, ... } }.
+    game.loot = { slots = {}, fishing = false }
+    game.zone = "Elwynn Forest"
+    -- unit -> { guid, name }
+    game.units = {}
+    -- itemID -> how many are in the bags and in the bank
+    game.bags, game.bank = {}, {}
+    -- GUID of an item in the bags -> its itemID
+    game.itemGUIDs = {}
+    game.containers = {}
+    game.time = 100
     -- recipeID -> info and reagent slots, as the profession window gives them
     game.recipes = {
         [2660] = { name = "Rough Sharpening Stone", icon = 135248, learned = true, diff = 3, out = 2862,
@@ -103,23 +119,49 @@ local function InstallGame()
     SlashCmdList = {}
     Enum = {
         CraftingReagentType = { Modifying = 0, Basic = 1, Finishing = 2 },
-        TooltipDataType = { Item = 0 },
+        TooltipDataType = { Item = 0, Unit = 2 },
+        LootSlotType = { None = 0, Item = 1, Money = 2, Currency = 3 },
     }
     C_Timer = { After = function(_, fn) game.timers[#game.timers + 1] = fn end }
     TooltipDataProcessor = {
         AddTooltipPostCall = function(dataType, fn)
-            assert(dataType == Enum.TooltipDataType.Item, "only item tooltips are hooked")
-            game.postCalls[#game.postCalls + 1] = fn
+            assert(dataType == Enum.TooltipDataType.Item or dataType == Enum.TooltipDataType.Unit,
+                "only item and unit tooltips are hooked")
+            game.postCalls[dataType] = game.postCalls[dataType] or {}
+            table.insert(game.postCalls[dataType], fn)
         end,
     }
+
+    -- The loot window.
+    local function Slot(slot) return assert(game.loot.slots[slot], "no loot slot " .. slot) end
+    GetNumLootItems = function() return #game.loot.slots end
+    GetLootSlotType = function(slot) return Slot(slot).money and 2 or 1 end
+    GetLootSlotLink = function(slot)
+        local s = Slot(slot)
+        if s.item then return ("|cffffffff|Hitem:%d::::::::5:::::|h[%s]|h|r"):format(s.item, s.name) end
+    end
+    GetLootSlotInfo = function(slot)
+        local s = Slot(slot)
+        return s.icon, s.name or "money", 1, nil, s.quality or 1
+    end
+    GetLootSourceInfo = function(slot) return unpack(Slot(slot).sources or {}) end
+    IsFishingLoot = function() return game.loot.fishing end
+    GetRealZoneText = function() return game.zone end
+    UnitGUID = function(unit) return game.units[unit] and game.units[unit].guid end
+    UnitName = function(unit) return game.units[unit] and game.units[unit].name end
     -- A frame, button or font string. Layout calls are accepted and ignored.
     local function NewWidget(name)
         local widget = { name = name, events = {}, scripts = {}, shown = true }
         function widget:RegisterEvent(event) self.events[event] = true end
         function widget:UnregisterEvent(event) self.events[event] = nil end
         function widget:SetScript(script, fn) self.scripts[script] = fn end
-        function widget:Show() self.shown = true end
+        function widget:Show()
+            local was = self.shown
+            self.shown = true
+            if not was and self.scripts.OnShow then self.scripts.OnShow(self) end
+        end
         function widget:Hide() self.shown = false end
+        function widget:IsShown() return self.shown end
         function widget:SetText(text) self.text = text end
         function widget:GetStringHeight() return 120 end
         function widget:CreateFontString() return NewWidget() end
@@ -135,7 +177,37 @@ local function InstallGame()
     C_Item = {
         GetItemInfo = function(itemID)
             local level = game.items[itemID]
-            if level then return "Item " .. itemID, "link", 1, level + 5, level end
+            if level then
+                return "Item " .. itemID, "link", 1, level + 5, level, "Type", "Subtype", 20, "", 134400,
+                    0, 0, 0, 0, 0, nil, game.reagents[itemID] or false
+            end
+        end,
+        GetItemInfoInstant = function(itemID) return itemID, "Type", "Subtype", "", 134400 end,
+        GetItemCount = function(itemID, includeBank)
+            return (game.bags[itemID] or 0) + (includeBank and game.bank[itemID] or 0)
+        end,
+        GetItemIDByGUID = function(guid) return game.itemGUIDs[guid] end,
+    }
+    GetTime = function() return game.time end
+    hooksecurefunc = function(tbl, name, hook)
+        local original = tbl[name]
+        tbl[name] = function(...)
+            original(...)
+            hook(...)
+        end
+    end
+    -- Bags and bank by container: bag -> slot -> { itemID, stack }.
+    Enum.BagIndex = { Backpack = 0, Bag_1 = 1, Bank = -1, BankBag_1 = 5 }
+    C_Container = {
+        UseContainerItem = function() end,
+        GetContainerItemID = function(bag, slot)
+            local item = game.containers[bag] and game.containers[bag][slot]
+            return item and item[1]
+        end,
+        GetContainerNumSlots = function(bag) return game.containers[bag] and 4 or 0 end,
+        GetContainerItemInfo = function(bag, slot)
+            local item = game.containers[bag] and game.containers[bag][slot]
+            if item then return { itemID = item[1], stackCount = item[2] } end
         end,
     }
     LibStub = function(name, silent)
@@ -221,6 +293,7 @@ local function InstallGame()
         function tooltip:IsForbidden() return self.forbidden end
         function tooltip:AddLine(text, r, g, b) self.lines[#self.lines + 1] = { text, nil, r, g, b } end
         function tooltip:AddDoubleLine(left, right, r, g, b) self.lines[#self.lines + 1] = { left, right, r, g, b } end
+        function tooltip:GetUnit() return self.unitName, self.unitName and "mouseover" end
         return tooltip
     end
     GameTooltip, ItemRefTooltip, ShoppingTooltip1 = NewTooltip(), NewTooltip(), NewTooltip()
@@ -288,8 +361,26 @@ end
 local function Hover(itemID, tooltip)
     tooltip = tooltip or GameTooltip
     tooltip.lines = {}
-    for _, fn in ipairs(game.postCalls) do fn(tooltip, { type = 0, id = itemID }) end
+    for _, fn in ipairs(game.postCalls[0] or {}) do fn(tooltip, { type = 0, id = itemID }) end
     return tooltip.lines
+end
+
+-- Hovers a creature in the world.
+local function HoverUnit(guid, name)
+    GameTooltip.lines = {}
+    GameTooltip.unitName = name
+    for _, fn in ipairs(game.postCalls[2] or {}) do fn(GameTooltip, { type = 2, guid = guid }) end
+    GameTooltip.unitName = nil
+    return GameTooltip.lines
+end
+
+-- Opens a loot window with these slots, as the game fires its events, and closes it.
+local function Loot(slots, fishing)
+    game.loot = { slots = slots, fishing = fishing or false }
+    Fire("LOOT_READY", false)
+    Fire("LOOT_OPENED", false, false)
+    Fire("LOOT_READY", false)
+    Fire("LOOT_CLOSED")
 end
 
 local function Login()
@@ -325,12 +416,13 @@ EasyRecipeDB, EasyRecipeCharDB = nil, nil
 local ns = Login()
 check(Printed("open each of your profession windows"), "first login explains what to do")
 equal(#Hover(COPPER_BAR), 0, "no lines before any scan")
-equal(#game.postCalls, 1, "one item post call registered")
+equal(#game.postCalls[0], 1, "one item post call registered")
+equal(#game.postCalls[2], 1, "one unit post call registered")
 
 -- Opening the profession records its recipes in a single scan.
 equal(OpenProfession(), 1, "a burst of events queues one scan")
 check(Printed("4 known recipes recorded."), "scan reports the known recipes")
-equal(select(2, ns.Count()), 5, "dummy and reagent-less recipes are not stored")
+equal(ns.Count(), 4, "unlearned, dummy and reagent-less recipes are not stored")
 
 local lines = Hover(COPPER_BAR)
 equal(#lines, 6, "blank + header + profession + three known recipes")
@@ -357,28 +449,24 @@ GameTooltip.forbidden = false
 game.secret[COPPER_BAR] = true
 equal(#Hover(COPPER_BAR), 0, "secret item id is skipped")
 game.secret[COPPER_BAR] = nil
-for _, fn in ipairs(game.postCalls) do fn(GameTooltip, nil) end
+for _, fn in ipairs(game.postCalls[0]) do fn(GameTooltip, nil) end
+for _, fn in ipairs(game.postCalls[2]) do fn(GameTooltip, nil) end
 check(true, "missing tooltip data does not error")
 
--- Options.
-SlashCmdList.EASYRECIPE("all")
-lines = Hover(COPPER_BAR)
-equal(#lines, 7, "unlearned recipes join the list, under the same profession line")
-equal(lines[7][1], "|T132417:0|t Copper Battle Axe (not learned)", "unlearned recipes come last, marked")
-equal(lines[7][2], "12x", "unlearned quantity")
+check(not HasLine(Hover(COPPER_BAR), "Copper Battle Axe"), "a recipe not learned is not listed")
 
+-- Options.
 SlashCmdList.EASYRECIPE("max 2")
 lines = Hover(COPPER_BAR)
 equal(#lines, 6, "blank + header + profession + two recipes + more line")
-equal(lines[6][1], "+2 more (hold Shift while hovering)", "more line counts what is hidden")
+equal(lines[6][1], "+1 more (hold Shift while hovering)", "more line counts what is hidden")
 game.shift = true
-equal(#Hover(COPPER_BAR), 7, "Shift shows every recipe")
+equal(#Hover(COPPER_BAR), 6, "Shift shows every recipe")
 game.shift = false
 SlashCmdList.EASYRECIPE("max 0")
 equal(EasyRecipeDB.maxLines, 2, "invalid max is refused")
 SlashCmdList.EASYRECIPE("max 999")
 equal(EasyRecipeDB.maxLines, 40, "max is capped")
-SlashCmdList.EASYRECIPE("all")
 SlashCmdList.EASYRECIPE("max 8")
 
 SlashCmdList.EASYRECIPE("off")
@@ -387,11 +475,11 @@ SlashCmdList.EASYRECIPE("  ON ")
 equal(#Hover(COPPER_BAR), 6, "on restores the lines")
 game.printed = {}
 SlashCmdList.EASYRECIPE("")
-check(Printed("4 known recipes recorded (5 including unlearned)."), "status line")
+check(Printed("4 known recipes recorded."), "status line")
 
--- Learning a recipe with the window closed.
+-- Learning a recipe with the window closed. The event vouches for it even if
+-- the game does not report it as learned yet.
 game.ready = false
-game.recipes[3293].learned = true
 Fire("NEW_RECIPE_LEARNED", 3293)
 RunTimers()
 equal(#Hover(COPPER_BAR), 7, "newly learned recipe shows without a rescan")
@@ -423,7 +511,12 @@ InstallGame()
 game.ready = false
 EasyRecipeCharDB.recipes.bad = { name = "x", reagents = {} }
 EasyRecipeCharDB.recipes[5] = "garbage"
+-- Saved by an earlier version, which also kept recipes not learned.
+EasyRecipeCharDB.recipes[6] = { name = "Old Unlearned", reagents = { [COPPER_BAR] = 1 }, learned = false }
+EasyRecipeDB.showUnlearned = true
 ns = Login()
+equal(EasyRecipeCharDB.recipes[6], nil, "recipes not learned from earlier versions are dropped")
+equal(EasyRecipeDB.showUnlearned, nil, "and so is their option")
 check(not Printed("open each of your profession windows"), "hint is not repeated")
 equal(#Hover(COPPER_BAR), 7, "saved recipes are indexed at load, profession included")
 equal(EasyRecipeCharDB.recipes.bad, nil, "malformed saved entries are dropped")
@@ -482,17 +575,24 @@ InstallGame()
 EasyRecipeDB, EasyRecipeCharDB = nil, nil
 Login()
 equal(game.category and game.category.name, "EasyRecipe", "options panel is registered")
-equal(#game.controls, 13, "three headers, seven checkboxes and three sliders")
+equal(#game.controls, 16, "four headers, nine checkboxes and three sliders")
 equal(game.controls[1], "header:General", "panel starts with the general section")
-equal(game.controls[7], "checkbox:|cffff8040Orange|r", "difficulty checkboxes carry their color")
-equal(game.controls[13], "slider:Highest level", "level range closes the panel")
+equal(game.controls[6], "checkbox:|cffff8040Orange|r", "difficulty checkboxes carry their color")
+equal(game.controls[12], "slider:Highest level", "level range ends its section")
+equal(game.controls[13], "header:Loot", "loot section follows")
+equal(game.controls[16], "checkbox:Where an item drops", "loot section closes the panel")
 equal(game.button and game.button.db, EasyRecipeDB.minimap, "minimap button keeps its place in the saved settings")
 check(game.button.shown, "minimap button is shown by default")
 local intro = Window("EasyRecipeIntro")
 check(intro and intro.shown, "first login shows the welcome window")
 
-game.launcher.OnClick()
-equal(game.opened, "id of EasyRecipe", "clicking the minimap button opens the options")
+game.launcher.OnClick({}, "RightButton")
+equal(game.opened, "id of EasyRecipe", "right-clicking the minimap button opens the options")
+game.launcher.OnClick({}, "LeftButton")
+local book = Window("EasyRecipeBook")
+check(book and book.shown, "left-clicking it opens the recipe book")
+game.launcher.OnClick({}, "LeftButton")
+check(not book.shown, "and a second click closes it")
 game.opened, game.combat = nil, true
 SlashCmdList.EASYRECIPE("config")
 equal(game.opened, nil, "options stay closed in combat")
@@ -502,7 +602,8 @@ SlashCmdList.EASYRECIPE("config")
 equal(game.opened, "id of EasyRecipe", "/easyrecipe config opens the options")
 GameTooltip.lines = {}
 game.launcher.OnTooltipShow(GameTooltip)
-equal(GameTooltip.lines[2][1], "Click to open the options.", "minimap button says what a click does")
+equal(GameTooltip.lines[2][1], "Left-click: recipe book", "minimap button says what each click does")
+equal(GameTooltip.lines[3][1], "Right-click: options", "both buttons")
 
 SetOption("minimap", false)
 check(EasyRecipeDB.minimap.hide and not game.button.shown, "minimap button can be hidden")
@@ -523,23 +624,21 @@ check(not intro.shown and game.opened == "id of EasyRecipe", "its other button o
 local axeLevel = game.items[2845]
 game.items[2845] = nil
 OpenProfession()
-equal(#game.controls, 15, "a scanned profession gets a header and a checkbox")
-equal(game.controls[15], "checkbox:Blacksmithing", "named after the profession")
+equal(#game.controls, 18, "a scanned profession gets a header and a checkbox")
+equal(game.controls[18], "checkbox:Blacksmithing", "named after the profession")
 OpenProfession()
-equal(#game.controls, 15, "a rescan adds no second checkbox")
+equal(#game.controls, 18, "a rescan adds no second checkbox")
 equal(#Hover(COPPER_BAR), 6, "no filter set: three known recipes")
 
 SetOption("showEasy", false)
 lines = Hover(COPPER_BAR)
 check(#lines == 5 and not HasLine(lines, "Copper Chain Pants"), "green recipes can be left out")
 SetOption("showEasy", true)
-SetOption("showUnlearned", true)
 SetOption("showOptimal", false)
 lines = Hover(COPPER_BAR)
 check(not HasLine(lines, "Copper Chain Boots"), "orange recipes can be left out")
-check(HasLine(lines, "Copper Battle Axe"), "a recipe not learned has no difficulty to filter by")
 SetOption("showOptimal", true)
-SetOption("showUnlearned", false)
+check(game.settings.EasyRecipe_showUnlearned == nil, "no option for recipes not learned")
 
 SetOption("minLevel", 5)
 SetOption("maxLevel", 5)
@@ -557,7 +656,7 @@ lines = Hover(COPPER_BAR)
 check(HasLine(lines, "Copper Axe") and not HasLine(lines, "Copper Chain Boots"), "a range set backwards still works")
 game.printed = {}
 SlashCmdList.EASYRECIPE("")
-check(Printed("Crafted item recorded for 5 recipes, its required level for 5."), "status counts the levels known")
+check(Printed("Crafted item recorded for 4 recipes, its required level for 4."), "status counts the levels known")
 
 -- The level is saved with the recipe: after a reload nothing is asked again.
 ResetGame()
@@ -566,7 +665,7 @@ game.ready = false
 game.items = {}
 Login()
 equal(Window("EasyRecipeIntro"), nil, "welcome window is not shown again")
-equal(game.controls[15], "checkbox:Blacksmithing", "saved professions have their checkbox at login")
+equal(game.controls[18], "checkbox:Blacksmithing", "saved professions have their checkbox at login")
 lines = Hover(COPPER_BAR)
 check(HasLine(lines, "Copper Axe") and not HasLine(lines, "Copper Chain Boots"), "saved levels and range survive a reload")
 SetOption("minLevel", 0)
@@ -577,7 +676,7 @@ game.ready = true
 game.base = { professionID = 202, professionName = "Engineering" }
 game.recipes = { [3922] = BOLTS }
 OpenProfession()
-equal(game.controls[16], "checkbox:Engineering", "a profession scanned later gets its checkbox right away")
+equal(game.controls[19], "checkbox:Engineering", "a profession scanned later gets its checkbox right away")
 equal(#Hover(COPPER_BAR), 8, "both professions listed")
 SetOption("profession_Engineering", false)
 lines = Hover(COPPER_BAR)
@@ -608,9 +707,181 @@ InstallGame()
 Settings.CreateSlider = function() error("no sliders here") end
 EasyRecipeDB, EasyRecipeCharDB = nil, nil
 Login()
-equal(#game.controls, 10, "everything but the three sliders is built")
+equal(#game.controls, 13, "everything but the three sliders is built")
 check(Printed("no sliders here"), "the failure is reported in chat")
 check(game.button ~= nil and Window("EasyRecipeIntro") ~= nil, "minimap button and welcome window still come up")
+
+-- Loot: learned from the corpses and catches the player loots.
+ResetGame()
+InstallGame()
+EasyRecipeDB, EasyRecipeCharDB = nil, nil
+ns = Login()
+OpenProfession()
+local wolf1, wolf2, wolf3 = CorpseGUID(WOLF, 1), CorpseGUID(WOLF, 2), CorpseGUID(WOLF, 3)
+equal(#HoverUnit(wolf1, "Young Wolf"), 0, "a creature never looted shows nothing")
+
+local MEAT = { item = WOLF_MEAT, name = "Chunk of Boar Meat", icon = 133972, quality = 1 }
+local function From(slot, ...)
+    local copy = {}
+    for k, v in pairs(slot) do copy[k] = v end
+    copy.sources = { ... }
+    return copy
+end
+game.units.mouseover = { guid = wolf1, name = "Young Wolf" }
+Loot({ { money = true, sources = { wolf1, 1 } }, From(MEAT, wolf1, 1) })
+game.units.mouseover = nil
+Loot({ From(MEAT, wolf2, 2),
+    From({ item = RABBIT_FOOT, name = "Rabbit's Foot", icon = 1, quality = 0 }, wolf2, 1) })
+-- Skinning the first corpse opens a second window on it.
+Loot({ From({ item = LIGHT_LEATHER, name = "Light Leather", icon = 134252, quality = 1 }, wolf1, 1) })
+-- A herb is a game object, not a creature.
+Loot({ From({ item = LINEN, name = "Peacebloom", icon = 1 }, "GameObject-0-1-0-12-1617-00000001", 1) })
+
+lines = HoverUnit(wolf3, "Young Wolf")
+equal(lines[2] and lines[2][1], "Already dropped (2 looted)", "two wolves looted: the skinning and the window events count once")
+equal(lines[3][1], "|T133972:0|t Chunk of Boar Meat", "most frequent drop first, with its icon")
+equal(lines[3][2], nil, "no percentage on the creature")
+equal(lines[4][1], "|T134252:0|t Light Leather", "skinning counts as a drop of that creature")
+equal(lines[4][3], 1, "colored by quality")
+equal(#lines, 4, "gray junk is left out: only crafting reagents")
+SetOption("lootReagentsOnly", false)
+check(HasLine(HoverUnit(wolf3, "Young Wolf"), "Rabbit's Foot"), "every item when the reagent filter is off")
+SetOption("lootReagentsOnly", true)
+
+lines = Hover(WOLF_MEAT)
+equal(lines[2][1], "Drops from", "an item says where it drops")
+equal(lines[3][1], "Young Wolf", "the creature's name, learned from the corpse under the mouse")
+equal(lines[3][2], nil, "no percentage on the item")
+equal(#Hover(LINEN), 0, "nothing is recorded from herbs")
+lines = Hover(COPPER_BAR)
+check(HasLine(lines, "Recipes using this item") and not HasLine(lines, "Drops from"), "recipes alone where nothing dropped it")
+
+-- A corpse looted without hovering or targeting it has no name until the creature is hovered.
+Loot({ From(MEAT, CorpseGUID(BOAR, 1), 1) })
+check(HasLine(Hover(WOLF_MEAT), "Creature #113"), "unnamed creature shows its number")
+HoverUnit(CorpseGUID(BOAR, 2), "Mangy Wolf")
+check(HasLine(Hover(WOLF_MEAT), "Mangy Wolf"), "hovering it later names it")
+
+-- Fishing is recorded by zone.
+local SNAPPER = { item = MUD_SNAPPER, name = "Raw Longjaw Mud Snapper", icon = 133890, quality = 1 }
+Loot({ From(SNAPPER) }, true)
+Loot({ From(SNAPPER) }, true)
+lines = Hover(MUD_SNAPPER)
+equal(lines[3][1], "Fishing: Elwynn Forest", "a catch is credited to the zone")
+equal(#lines, 3, "one zone for both catches")
+
+-- Secret values and switches.
+game.secret[wolf3] = true
+equal(#HoverUnit(wolf3, "Young Wolf"), 0, "secret GUID is skipped")
+game.secret[wolf3] = nil
+SetOption("lootOnUnit", false)
+equal(#HoverUnit(wolf3, "Young Wolf"), 0, "creature lines can be turned off")
+SetOption("lootOnUnit", true)
+SetOption("lootOnItem", false)
+equal(#Hover(WOLF_MEAT), 0, "item lines can be turned off")
+SetOption("lootOnItem", true)
+game.printed = {}
+SlashCmdList.EASYRECIPE("")
+check(Printed("Loot recorded from 2 kinds of creatures and 1 fishing spots."), "status counts the loot sources")
+
+-- A clam dropped by a crab, then opened for its meat.
+local CRAB, CLAM, CLAM_MEAT, CLAM_GUID = 830, 5523, 5503, "Item-0-0-0-00000ABC"
+game.items[CLAM], game.items[CLAM_MEAT] = 0, 0
+game.reagents[CLAM_MEAT] = true
+game.zone = "Westfall"
+game.units.target = { guid = CorpseGUID(CRAB, 1), name = "Sand Crab" }
+Loot({ From({ item = CLAM, name = "Small Barnacled Clam", icon = 134432, quality = 1 }, CorpseGUID(CRAB, 1), 1) })
+game.units.target = nil
+game.itemGUIDs[CLAM_GUID] = CLAM
+local MEAT_SLOT = { item = CLAM_MEAT, name = "Clam Meat", icon = 133912, quality = 1 }
+Loot({ From(MEAT_SLOT, CLAM_GUID, 1) })
+-- The same stack of clams, opened again.
+Loot({ From(MEAT_SLOT, CLAM_GUID, 1) })
+lines = Hover(CLAM_MEAT)
+equal(lines[3] and lines[3][1], "Small Barnacled Clam (from Sand Crab)", "the meat leads to the clam, and the clam to the crab")
+equal(ns.LootSource("item:" .. CLAM).looted, 2, "each opening of a stack counts")
+equal(Hover(CLAM)[3][1], "Sand Crab", "the clam says where it drops")
+check(HasLine(HoverUnit(CorpseGUID(CRAB, 2), "Sand Crab"), "Small Barnacled Clam"),
+    "the reagent filter keeps items that open into something")
+equal(ns.LootSource("npc:" .. CRAB).zones.Westfall, true, "a creature remembers the zone it was looted in")
+check(ns.LootSource("item:" .. CLAM).zones == nil, "an opened item has no zone")
+
+-- The recipe book counts the bags and the bank.
+local function BookLine(mode, text)
+    for i, line in ipairs(ns.BookLines(mode)) do
+        if line.text:find(text, 1, true) then return line, i end
+    end
+end
+game.bags[COPPER_BAR], game.bank[FLUX] = 8, 2
+local lines = ns.BookLines("craftable")
+equal(lines[1].text, "Blacksmithing", "recipes grouped by profession")
+check(BookLine("craftable", "Copper Chain Pants  x2"), "how many times it can be made")
+check(BookLine("craftable", "Copper Axe  x1"), "the bank counts")
+local flux = BookLine("craftable", "#2880  2/2")
+check(flux and flux.color[2] == 1 and flux.indent == 2 and flux.itemID == FLUX, "a reagent that is there is green")
+check(not BookLine("craftable", "Rough Sharpening Stone"), "nothing to make it with: not craftable")
+game.bags[COPPER_BAR] = 3
+equal(ns.BookLines("craftable")[1].text, "Nothing to craft with what is in your bags and bank.", "empty tab says so")
+local copper = BookLine("almost", "#2840  3/4")
+check(copper and copper.color[1] == 1 and copper.color[2] == 0.3, "a reagent short of what is needed is red")
+check(not BookLine("almost", "Rough Sharpening Stone"), "no reagent at all: not almost")
+check(BookLine("all", "Rough Sharpening Stone"), "every known recipe is in All")
+SetOption("profession_Blacksmithing", false)
+equal(ns.BookLines("all")[1].text, "No recipes yet: open each of your profession windows once.", "the book follows the filters")
+SetOption("profession_Blacksmithing", true)
+
+local crab, at = BookLine("beasts", "Sand Crab")
+check(crab and crab.text:find("Westfall", 1, true), "a beast is listed with its zone")
+lines = ns.BookLines("beasts")
+check(lines[at + 1].text:find("Small Barnacled Clam", 1, true) and lines[at + 1].indent == 1, "then what it drops")
+check(lines[at + 2].text:find("Clam Meat", 1, true) and lines[at + 2].indent == 2, "and what that opens into")
+check(BookLine("beasts", "Fishing: Elwynn Forest"), "fishing spots are listed too")
+check(not BookLine("beasts", "Small Barnacled Clam (from"), "opened items are not beasts of their own")
+
+-- A game that does not count the bank while it is closed: what it held when open stands in.
+game.bags[COPPER_BAR] = 0
+game.containers[-1] = { [1] = { COPPER_BAR, 5 }, [2] = { COPPER_BAR, 3 } }
+Fire("BANKFRAME_OPENED")
+RunTimers()
+Fire("BANKFRAME_CLOSED")
+game.containers[-1] = nil
+Fire("BAG_UPDATE_DELAYED")
+check(BookLine("craftable", "Copper Chain Boots  x1"), "the bank's last known contents count")
+equal(EasyRecipeCharDB.bank[COPPER_BAR], 8, "and are saved with the character")
+
+-- Loot that does not say which item it came from goes to the item just used.
+local THICK_CLAM = 7973
+game.containers[0] = { [1] = { THICK_CLAM, 3 } }
+C_Container.UseContainerItem(0, 1)
+Loot({ From(MEAT_SLOT, "Item-0-0-0-00000DEF", 1) })
+local thick = ns.LootSource("item:" .. THICK_CLAM)
+equal(thick and thick.looted, 1, "an item just used from the bags gets the loot")
+C_Container.UseContainerItem(0, 1)
+Loot({ From({ item = LINEN, name = "Peacebloom", icon = 1 }, "GameObject-0-1-0-12-1617-00000002", 1) })
+equal(thick.looted, 1, "a herb picked right after is not credited to it")
+C_Container.UseContainerItem(0, 1)
+game.time = game.time + 10
+Loot({ From(MEAT_SLOT, "Item-0-0-0-00000DEF", 1) })
+equal(thick.looted, 1, "nor loot opened long after")
+
+SlashCmdList.EASYRECIPE("book")
+book = Window("EasyRecipeBook")
+check(book and book.shown, "/easyrecipe book opens it")
+Click("Beasts")
+Fire("BAG_UPDATE_DELAYED")
+RunTimers()
+check(not Printed("could not be set up"), "the window draws without errors")
+
+-- Loot is account-wide and survives a reload.
+ResetGame()
+InstallGame()
+EasyRecipeCharDB = nil
+Login()
+equal(Hover(WOLF_MEAT)[3][1], "Young Wolf", "another character sees the same drops")
+equal(HoverUnit(wolf3, "Young Wolf")[2][1], "Already dropped (2 looted)", "and the same creature lines")
+SlashCmdList.EASYRECIPE("resetloot")
+equal(#Hover(WOLF_MEAT), 0, "resetloot clears the item lines")
+equal(#HoverUnit(wolf3, "Young Wolf"), 0, "and the creature lines")
 
 -- Portuguese client.
 ResetGame()

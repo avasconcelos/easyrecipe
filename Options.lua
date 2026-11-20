@@ -74,7 +74,6 @@ function ns.SetupOptions()
     Try(AddProxyCheckbox, "minimap", L.OPT_MINIMAP, L.OPT_MINIMAP_TIP,
         function() return not ns.db.minimap.hide end,
         function(value) ns.SetMinimapShown(value) end)
-    Try(AddCheckbox, "showUnlearned", L.OPT_UNLEARNED, L.OPT_UNLEARNED_TIP)
     Try(AddSlider, "maxLines", L.OPT_MAX, L.OPT_MAX_TIP:format(ns.HARD_CAP), 1, ns.HARD_CAP)
 
     Try(AddHeader, L.OPT_DIFFICULTY)
@@ -86,6 +85,11 @@ function ns.SetupOptions()
     Try(AddHeader, L.OPT_LEVEL)
     Try(AddSlider, "minLevel", L.OPT_MIN_LEVEL, L.OPT_LEVEL_TIP, 0, ns.LEVEL_CAP)
     Try(AddSlider, "maxLevel", L.OPT_MAX_LEVEL, L.OPT_LEVEL_TIP, 0, ns.LEVEL_CAP)
+
+    Try(AddHeader, L.OPT_LOOT)
+    Try(AddCheckbox, "lootOnUnit", L.OPT_LOOT_UNIT, L.OPT_LOOT_UNIT_TIP)
+    Try(AddCheckbox, "lootReagentsOnly", L.OPT_LOOT_REAGENTS, L.OPT_LOOT_REAGENTS_TIP)
+    Try(AddCheckbox, "lootOnItem", L.OPT_LOOT_ITEM, L.OPT_LOOT_ITEM_TIP)
 
     ns.AddProfessionOptions()
     Settings.RegisterAddOnCategory(category)

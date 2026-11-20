@@ -79,11 +79,13 @@ end
 
 local scratch = {}
 
--- Reads a recipe from the game into `entry` (or a new table). Returns nil and
--- leaves `entry` alone when the game has nothing usable for it.
-local function ReadRecipe(recipeID, entry, profession)
+-- Reads a known recipe from the game into `entry` (or a new table). Returns nil
+-- and leaves `entry` alone when the game has nothing usable for it. `learned`
+-- vouches for a recipe the game may not report as learned yet.
+local function ReadRecipe(recipeID, entry, profession, learned)
     local okInfo, info = pcall(C.GetRecipeInfo, recipeID)
     if not okInfo or type(info) ~= "table" then return end
+    if not (learned or info.learned) then return end
     if info.isDummyRecipe or info.isGatheringRecipe or info.isRecraft or info.isSalvageRecipe then return end
 
     local okSchematic, schematic = pcall(C.GetRecipeSchematic, recipeID, false)
@@ -115,7 +117,6 @@ local function ReadRecipe(recipeID, entry, profession)
     local name = info.name or schematic.name
     entry.name = type(name) == "string" and name ~= "" and name or ("#" .. recipeID)
     entry.icon = info.icon or schematic.icon
-    entry.learned = info.learned and true or false
     entry.diff = type(info.relativeDifficulty) == "number" and info.relativeDifficulty or nil
     entry.prof = profession or entry.prof
     -- Recipes that make no item, such as enchantments, have no output and no level.
@@ -144,8 +145,8 @@ function ns.Scan()
     ns.RebuildIndex()
     ns.AddProfessionOptions()
 
-    local learned = ns.Count()
-    if learned ~= before then ns.Print(L.SCANNED:format(learned)) end
+    local after = ns.Count()
+    if after ~= before then ns.Print(L.SCANNED:format(after)) end
 end
 
 local queued = false
@@ -161,13 +162,11 @@ end
 -- A recipe can be learned with the profession window closed, where no scan runs.
 function ns.OnRecipeLearned(recipeID)
     if type(recipeID) ~= "number" then return end
-    local entry = ns.recipes[recipeID]
-    if not entry and C and C.GetRecipeInfo and C.GetRecipeSchematic then
-        entry = ReadRecipe(recipeID, nil, ProfessionName("GetProfessionInfoByRecipeID", recipeID))
+    if not ns.recipes[recipeID] and C and C.GetRecipeInfo and C.GetRecipeSchematic then
+        local entry = ReadRecipe(recipeID, nil, ProfessionName("GetProfessionInfoByRecipeID", recipeID), true)
         ns.recipes[recipeID] = entry
     end
-    if entry then
-        entry.learned = true
+    if ns.recipes[recipeID] then
         ns.RebuildIndex()
         ns.AddProfessionOptions()
     end

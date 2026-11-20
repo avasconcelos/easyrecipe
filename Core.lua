@@ -8,7 +8,6 @@ ns.LEVEL_CAP = 60
 
 local DEFAULTS = {
     enabled = true,
-    showUnlearned = false,
     maxLines = 8,
     showOptimal = true,
     showMedium = true,
@@ -16,16 +15,19 @@ local DEFAULTS = {
     showTrivial = true,
     minLevel = 0,
     maxLevel = ns.LEVEL_CAP,
+    lootOnUnit = true,
+    lootOnItem = true,
+    lootReagentsOnly = true,
     introShown = false,
 }
 ns.DEFAULTS = DEFAULTS
 
--- Recipes recorded for this character, keyed by recipe spell ID:
--- { name, icon, learned, diff, prof, out, lvl, reagents = { [itemID] = quantity } }
+-- Recipes this character knows, keyed by recipe spell ID:
+-- { name, icon, diff, prof, out, lvl, reagents = { [itemID] = quantity } }
 -- `out` is the item the recipe makes and `lvl` the level required to use it.
 ns.recipes = {}
 
--- itemID -> list of recipe IDs using it: known recipes first, then by profession.
+-- itemID -> list of recipe IDs using it, by profession.
 local index = {}
 
 local function Print(msg)
@@ -42,7 +44,6 @@ end
 
 local function CompareRecipes(a, b)
     local ra, rb = ns.recipes[a], ns.recipes[b]
-    if ra.learned ~= rb.learned then return ra.learned end
     local pa, pb = ra.prof or "", rb.prof or ""
     if pa ~= pb then return pa < pb end
     local da, db = ra.diff or 4, rb.diff or 4
@@ -72,17 +73,16 @@ function ns.RecipesFor(itemID)
     return index[itemID]
 end
 
--- Known recipes, all recipes, those whose crafted item is recorded and those
--- whose crafted item's level is.
+-- Recipes recorded, those whose crafted item is recorded and those whose
+-- crafted item's level is.
 function ns.Count()
-    local learned, total, items, levels = 0, 0, 0, 0
+    local total, items, levels = 0, 0, 0
     for _, recipe in pairs(ns.recipes) do
         total = total + 1
-        if recipe.learned then learned = learned + 1 end
         if recipe.out then items = items + 1 end
         if recipe.lvl then levels = levels + 1 end
     end
-    return learned, total, items, levels
+    return total, items, levels
 end
 
 -- Names of the professions this character has recipes recorded for, sorted.
@@ -104,6 +104,8 @@ local function InitDB()
     for key, value in pairs(DEFAULTS) do
         if type(EasyRecipeDB[key]) ~= type(value) then EasyRecipeDB[key] = value end
     end
+    -- An option of earlier versions: the game only lists the recipes a character knows.
+    EasyRecipeDB.showUnlearned = nil
     -- LibDBIcon keeps the minimap button's position and visibility here.
     if type(EasyRecipeDB.minimap) ~= "table" then EasyRecipeDB.minimap = {} end
     ns.db = EasyRecipeDB
@@ -113,12 +115,15 @@ local function InitDB()
     if type(char.recipes) ~= "table" then char.recipes = {} end
     -- Profession name -> true for the professions left out of the tooltip.
     if type(char.hiddenProfs) ~= "table" then char.hiddenProfs = {} end
+    -- itemID -> how many the bank held when it was last open.
+    if type(char.bank) ~= "table" then char.bank = {} end
     for recipeID, recipe in pairs(char.recipes) do
         if type(recipeID) ~= "number" or type(recipe) ~= "table"
-            or type(recipe.name) ~= "string" or type(recipe.reagents) ~= "table" then
+            or type(recipe.name) ~= "string" or type(recipe.reagents) ~= "table"
+            or recipe.learned == false then
             char.recipes[recipeID] = nil
         else
-            recipe.learned = recipe.learned and true or false
+            recipe.learned = nil
             if type(recipe.diff) ~= "number" then recipe.diff = nil end
             if type(recipe.prof) ~= "string" or recipe.prof == "" then recipe.prof = nil end
             if type(recipe.out) ~= "number" then recipe.out = nil end
@@ -139,10 +144,14 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2)
         self:UnregisterEvent("ADDON_LOADED")
         InitDB()
         ns.RebuildIndex()
+        ns.InitLoot()
         if not ns.HookTooltips() then Print(L.NO_TOOLTIP_API) end
         self:RegisterEvent("PLAYER_LOGIN")
         self:RegisterEvent("NEW_RECIPE_LEARNED")
         self:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+        self:RegisterEvent("LOOT_READY")
+        self:RegisterEvent("LOOT_OPENED")
+        self:RegisterEvent("LOOT_CLOSED")
         for _, name in ipairs(SCAN_EVENTS) do
             self:RegisterEvent(name)
         end
@@ -160,6 +169,10 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2)
         ns.OnRecipeLearned(arg1)
     elseif event == "GET_ITEM_INFO_RECEIVED" then
         ns.OnItemInfo(arg1, arg2)
+    elseif event == "LOOT_READY" or event == "LOOT_OPENED" then
+        ns.OnLootReady()
+    elseif event == "LOOT_CLOSED" then
+        ns.OnLootClosed()
     else
         ns.QueueScan()
     end
@@ -172,14 +185,13 @@ SlashCmdList.EASYRECIPE = function(msg)
     local cmd, arg = (msg or ""):lower():match("^%s*(%S*)%s*(.-)%s*$")
     if cmd == "config" then
         ns.OpenOptions()
+    elseif cmd == "book" then
+        ns.Try(ns.ToggleBook)
     elseif cmd == "intro" then
         ns.Try(ns.ShowIntro)
     elseif cmd == "on" or cmd == "off" then
         db.enabled = cmd == "on"
         Print(db.enabled and L.ENABLED or L.DISABLED)
-    elseif cmd == "all" then
-        db.showUnlearned = not db.showUnlearned
-        Print(db.showUnlearned and L.ALL_ON or L.ALL_OFF)
     elseif cmd == "max" then
         local n = tonumber(arg)
         if n and n >= 1 then
@@ -192,10 +204,14 @@ SlashCmdList.EASYRECIPE = function(msg)
         wipe(ns.recipes)
         ns.RebuildIndex()
         Print(L.RESET)
+    elseif cmd == "resetloot" then
+        ns.ResetLoot()
+        Print(L.LOOT_RESET)
     else
-        local learned, total, items, levels = ns.Count()
-        Print(L.STATUS:format(learned, total))
+        local total, items, levels = ns.Count()
+        Print(L.SCANNED:format(total))
         Print(L.STATUS_LEVELS:format(items, levels))
+        Print(L.STATUS_LOOT:format(ns.LootCount()))
         for _, line in ipairs(L.HELP) do
             print("  " .. line)
         end
