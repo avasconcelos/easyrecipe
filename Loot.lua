@@ -6,8 +6,19 @@ local ITEM_SLOT = Enum and Enum.LootSlotType and Enum.LootSlotType.Item or 1
 -- Units that can be the corpse being looted, to learn the creature's name.
 local CORPSE_UNITS = { "mouseover", "target" }
 
+local function IsSecret(value)
+    return issecretvalue ~= nil and issecretvalue(value)
+end
+
+local function Text(fn, ...)
+    if not fn then return end
+    local ok, text = pcall(fn, ...)
+    if ok and text ~= nil and not IsSecret(text) and type(text) == "string" and text ~= "" then return text end
+end
+
 -- Account-wide: a kind of creature drops the same things for every character.
--- sources: key -> { kind = "npc" | "fish" | "item", name, looted, zones, places, items = { [itemID] = times dropped } }
+-- sources: key -> { kind = "npc" | "fish" | "item", name, looted, zones, places, ctype, family,
+--   items = { [itemID] = times dropped } }
 --   keyed "npc:<npcID>", "fish:<zone>" or "item:<itemID>" for what opens, such
 --   as clams; `looted` counts corpses, catches or openings, `zones` holds
 --   the zones a creature was looted in, and `places` zone -> subzone ->
@@ -22,10 +33,6 @@ local dropIndex = {}
 -- opened again (or skinned after being looted) is not counted twice.
 local seenCorpses, seenDrops = {}, {}
 local windowRecorded = false
-
-local function IsSecret(value)
-    return issecretvalue ~= nil and issecretvalue(value)
-end
 
 -- Creature-0-server-instance-zone-npcID-spawn. Players and objects such as
 -- herbs, ore and chests have GUIDs of other kinds.
@@ -58,12 +65,6 @@ end
 
 local function RecentlyOpened()
     if lastUsed and GetTime() - lastUsedAt <= USE_WINDOW then return lastUsed end
-end
-
-local function Text(fn, ...)
-    if not fn then return end
-    local ok, text = pcall(fn, ...)
-    if ok and text ~= nil and not IsSecret(text) and type(text) == "string" and text ~= "" then return text end
 end
 
 local function MapID()
@@ -162,6 +163,8 @@ function ns.InitLoot()
             if type(source.name) ~= "string" then source.name = nil end
             if type(source.zones) ~= "table" then source.zones = nil end
             if type(source.places) ~= "table" then source.places = nil end
+            if type(source.ctype) ~= "string" then source.ctype = nil end
+            if type(source.family) ~= "string" then source.family = nil end
             for zone, subzones in pairs(source.places or {}) do
                 if type(zone) ~= "string" or type(subzones) ~= "table" then source.places[zone] = nil end
             end
@@ -265,14 +268,18 @@ local function RememberItem(itemID, slot)
     loot.items[itemID] = info
 end
 
-local function NameOf(guid)
+local function UnitOf(guid)
     for _, unit in ipairs(CORPSE_UNITS) do
         local unitGUID = UnitGUID(unit)
-        if unitGUID ~= nil and not IsSecret(unitGUID) and unitGUID == guid then
-            local name = UnitName(unit)
-            if name ~= nil and not IsSecret(name) and name ~= "" then return name end
-        end
+        if unitGUID ~= nil and not IsSecret(unitGUID) and unitGUID == guid then return unit end
     end
+end
+
+-- The creature's type, such as Beast or Humanoid, and for beasts their
+-- family, such as Bear.
+local function RememberKind(source, unit)
+    source.ctype = Text(UnitCreatureType, unit) or source.ctype
+    source.family = Text(UnitCreatureFamily, unit) or source.family
 end
 
 local function RecordFishing(count)
@@ -323,7 +330,9 @@ local function RecordSources(count)
                 RecordOpened(containerID, itemID, slot)
             elseif npcID then
                 local key = "npc:" .. npcID
-                local source = Source(key, "npc", NameOf(guid))
+                local unit = UnitOf(guid)
+                local source = Source(key, "npc", unit and Text(UnitName, unit))
+                if unit then RememberKind(source, unit) end
                 if not seenCorpses[guid] then
                     seenCorpses[guid] = true
                     RememberPlace(source, true)
@@ -445,7 +454,7 @@ end
 
 local function OnUnitTooltip(tooltip, data)
     local db = ns.db
-    if not (db and db.enabled and loot) then return end
+    if not (db and loot) then return end
     if tooltip ~= GameTooltip then return end
     if tooltip.IsForbidden and tooltip:IsForbidden() then return end
     local npcID = NpcID(data and data.guid)
@@ -457,8 +466,11 @@ local function OnUnitTooltip(tooltip, data)
         local name = tooltip:GetUnit()
         if name ~= nil and not IsSecret(name) and type(name) == "string" and name ~= "" then source.name = name end
     end
-    -- A creature in sight is near: where it lives is learned without looting it again.
+    -- A creature in sight is near: where it lives, and what it is, are learned
+    -- without looting it again.
     RememberPlace(source)
+    local unit = UnitOf(data.guid)
+    if unit then RememberKind(source, unit) end
     if not db.lootOnUnit or source.looted == 0 then return end
 
     local list = ns.SourceItems(source)

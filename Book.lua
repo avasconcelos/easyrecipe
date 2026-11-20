@@ -22,6 +22,17 @@ local tab = "craftable"
 -- Headers clicked open or closed this session: beasts start closed, as there
 -- may be hundreds, and professions open.
 local toggled = {}
+-- What the search box holds, lowercased, or nil.
+local search
+
+function ns.SetBookSearch(text)
+    text = type(text) == "string" and text:match("^%s*(.-)%s*$"):lower() or ""
+    search = text ~= "" and text or nil
+end
+
+local function Matches(text)
+    return type(text) == "string" and text:lower():find(search, 1, true) ~= nil
+end
 
 local function Count(itemID, includeBank)
     local count = GetItemCount and GetItemCount(itemID, includeBank)
@@ -106,6 +117,8 @@ local function Line(lines, text, color, indent, itemID)
 end
 
 local function IsOpen(key, openByDefault)
+    -- While searching everything found is shown.
+    if search then return true end
     if toggled[key] then return not openByDefault end
     return openByDefault
 end
@@ -151,11 +164,19 @@ local function CompareRecipes(a, b)
     return a < b
 end
 
+local function RecipeFound(recipe)
+    if not search or Matches(recipe.name) then return true end
+    for itemID in pairs(recipe.reagents) do
+        if Matches((ns.ItemDisplay(itemID))) then return true end
+    end
+    return false
+end
+
 local function RecipeLines(lines, mode)
     -- profession -> recipe IDs, and how many times each can be made
     local byProfession, times = {}, {}
     for recipeID, recipe in pairs(ns.recipes) do
-        if ns.IsListed(recipe) then
+        if ns.IsListed(recipe) and RecipeFound(recipe) then
             local count, any = Craftable(recipe)
             if mode == "all" or (mode == "craftable" and count > 0) or (mode == "almost" and count == 0 and any) then
                 local profession = recipe.prof or L.BOOK_OTHER
@@ -201,22 +222,85 @@ local function Gray(text)
     return "  |cff999999" .. text .. "|r"
 end
 
--- A beast, where on the map it was last looted there, and what it drops.
-local function BeastLine(lines, key, at, indent)
+local KIND_COLOR = { 0.5, 0.8, 1 }
+
+local function Position(at)
+    if type(at) == "table" and at[1] and at[2] then return Gray(("%.1f, %.1f"):format(at[1], at[2])) end
+    return ""
+end
+
+-- Each zone and subzone a source was found in, with where on the map it was
+-- last looted there.
+local function PlaceLines(lines, source, indent)
+    for _, zone in ipairs(SortedKeys(source.places or {})) do
+        local subzones = source.places[zone]
+        for _, sub in ipairs(SortedKeys(subzones)) do
+            Line(lines, (sub == "" and zone or zone .. ": " .. sub) .. Position(subzones[sub]), GRAY, indent)
+        end
+    end
+end
+
+-- A beast and what it drops: under a place, with where on the map it was
+-- last looted there; under its kind, with every place it was found.
+local function BeastLine(lines, key, indent, at, withPlaces)
     local source = ns.LootSource(key)
-    local text = ns.SourceName(key, source)
-    if type(at) == "table" and at[1] and at[2] then text = text .. Gray(("%.1f, %.1f"):format(at[1], at[2])) end
+    local text = ns.SourceName(key, source) .. Position(at)
     text = text .. Gray("(" .. L.BOOK_LOOTED:format(source.looted) .. ")")
     if Header(lines, text, { 1, 1, 1 }, key, false, indent) then
+        if withPlaces then PlaceLines(lines, source, indent + 1) end
         ItemLines(lines, source, indent + 1, 0)
     end
 end
 
--- Zone, then subzone, then the beasts found there; a beast found in several
--- places is under each. Those with no known place come last.
-local function BeastLines(lines)
+-- What kind of creature a source is: its type, and the family of beasts.
+local function Kind(source)
+    if source.kind == "fish" then return L.BOOK_FISHING end
+    if source.ctype and source.family then return source.ctype .. ": " .. source.family end
+    return source.ctype or L.BOOK_NO_TYPE
+end
+
+-- The beasts by kind, unknown kind last, each kind a header.
+local function KindLines(lines, keys, indent, keyPrefix, openByDefault, beastLine)
+    local groups = {}
+    for _, key in ipairs(keys) do
+        local kind = Kind(ns.LootSource(key))
+        groups[kind] = groups[kind] or {}
+        table.insert(groups[kind], key)
+    end
+    local kinds = SortedKeys(groups)
+    for i, kind in ipairs(kinds) do
+        if kind == L.BOOK_NO_TYPE then
+            table.remove(kinds, i)
+            kinds[#kinds + 1] = kind
+            break
+        end
+    end
+    for _, kind in ipairs(kinds) do
+        if Header(lines, kind .. Gray("(" .. #groups[kind] .. ")"), KIND_COLOR, keyPrefix .. kind, openByDefault, indent) then
+            for _, key in ipairs(groups[kind]) do beastLine(key, indent + 1) end
+        end
+    end
+end
+
+-- A source found by its name or by an item it drops, or that opens out of
+-- one of those.
+local function SourceFound(key, source, depth)
+    if Matches(ns.SourceName(key, source)) then return true end
+    for _, itemID in ipairs(ns.SourceItems(source)) do
+        if Matches((ns.ItemDisplay(itemID))) then return true end
+        local inside = ns.LootSource("item:" .. itemID)
+        if inside and inside ~= source and depth < 2 and SourceFound("item:" .. itemID, inside, depth + 1) then
+            return true
+        end
+    end
+    return false
+end
+
+-- Zone, then subzone, then kind, then the beasts found there; a beast found
+-- in several places is under each. Those with no known place come last.
+local function PlaceView(lines, found)
     local tree, unplaced = {}, {}
-    for _, key in ipairs(ns.Beasts()) do
+    for _, key in ipairs(found) do
         local places = ns.LootSource(key).places
         if places and next(places) then
             for zone, subzones in pairs(places) do
@@ -246,21 +330,44 @@ local function BeastLines(lines)
                         indent = nil
                     end
                 end
-                for _, key in ipairs(indent and subzones[sub] or {}) do
-                    BeastLine(lines, key, ns.LootSource(key).places[zone][sub], indent)
+                if indent then
+                    KindLines(lines, subzones[sub], indent, "kind:" .. zone .. ":" .. sub .. ":", true, function(key, at)
+                        BeastLine(lines, key, at, ns.LootSource(key).places[zone][sub])
+                    end)
                 end
             end
         end
     end
     if #unplaced > 0 then
         if Header(lines, L.BOOK_UNPLACED .. Gray("(" .. #unplaced .. ")"), GRAY, "unplaced", false) then
-            Line(lines, L.BOOK_FORGET, MISSING_COLOR, 1)
-            lines[#lines].action = "forget"
+            -- Clearing forgets all of them, not just those found.
+            if not search then
+                Line(lines, L.BOOK_FORGET, MISSING_COLOR, 1)
+                lines[#lines].action = "forget"
+            end
             for _, key in ipairs(unplaced) do
-                BeastLine(lines, key, nil, 1)
+                BeastLine(lines, key, 1)
             end
         end
     end
+end
+
+local function BeastLines(lines)
+    local found = {}
+    for _, key in ipairs(ns.Beasts()) do
+        if not search or SourceFound(key, ns.LootSource(key), 0) then found[#found + 1] = key end
+    end
+    if ns.db.beastView == "kind" then
+        KindLines(lines, found, 0, "kind:", false, function(key, indent)
+            BeastLine(lines, key, indent, nil, true)
+        end)
+    else
+        PlaceView(lines, found)
+    end
+end
+
+function ns.SetBeastView(view)
+    ns.db.beastView = view
 end
 
 local function Forget()
@@ -302,7 +409,9 @@ function ns.BookLines(mode)
     else
         RecipeLines(lines, mode)
     end
-    if #lines == 0 then Line(lines, L[EMPTY[mode]], GRAY) end
+    if #lines == 0 then
+        if search then Line(lines, L.BOOK_NO_MATCH, GRAY) else Line(lines, L[EMPTY[mode]], GRAY) end
+    end
     return lines
 end
 
@@ -361,6 +470,12 @@ function Refresh()
     content:SetHeight(math.max(1, #lines * ROW_HEIGHT))
     for _, button in ipairs(window.tabs) do
         if button.mode == tab then button:LockHighlight() else button:UnlockHighlight() end
+    end
+    if tab == "beasts" then
+        window.view:SetText(ns.db.beastView == "kind" and L.BOOK_BY_PLACE or L.BOOK_BY_KIND)
+        window.view:Show()
+    else
+        window.view:Hide()
     end
 end
 
@@ -421,8 +536,31 @@ local function Build()
         frame.tabs[i] = button
     end
 
+    -- The game's search box, with its clear button and hint; a plain input box
+    -- where the client has none.
+    local ok, box = pcall(CreateFrame, "EditBox", nil, frame, "SearchBoxTemplate")
+    if not ok then box = CreateFrame("EditBox", nil, frame, "InputBoxTemplate") end
+    box:SetSize(WIDTH - 170, 20)
+    box:SetPoint("TOPLEFT", 26, -74)
+    box:SetAutoFocus(false)
+    if type(box.Instructions) == "table" then box.Instructions:SetText(L.BOOK_SEARCH) end
+    box:HookScript("OnTextChanged", function(self)
+        ns.SetBookSearch(self:GetText())
+        Refresh()
+    end)
+    box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+
+    local view = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    view:SetSize(120, 22)
+    view:SetPoint("TOPRIGHT", -20, -73)
+    view:SetScript("OnClick", function()
+        ns.SetBeastView(ns.db.beastView == "kind" and "place" or "kind")
+        Refresh()
+    end)
+    frame.view = view
+
     local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 20, -76)
+    scroll:SetPoint("TOPLEFT", 20, -100)
     scroll:SetPoint("BOTTOMRIGHT", -36, 18)
     content = CreateFrame("Frame", nil, scroll)
     content:SetSize(WIDTH - 60, 1)

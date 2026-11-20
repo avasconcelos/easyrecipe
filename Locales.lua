@@ -5,8 +5,8 @@ local L = {
     MORE = "+%d more (hold Shift while hovering)",
     HINT = "open each of your profession windows once so your recipes can be recorded.",
     SCANNED = "%d known recipes recorded.",
-    ENABLED = "tooltip lines enabled.",
-    DISABLED = "tooltip lines disabled.",
+    ENABLED = "recipes in tooltips enabled.",
+    DISABLED = "recipes in tooltips disabled.",
     MAX_SET = "showing up to %d recipes per tooltip.",
     MAX_USAGE = "usage: /easyrecipe max <number>",
     RESET = "recipe data cleared. Open your profession windows again to rebuild it.",
@@ -34,7 +34,7 @@ local L = {
     OPT_LEVEL_TIP = "A recipe is listed when the level required to use the item it makes is within this range. Recipes for items anyone can use, such as bars and bolts of cloth, and for enchantments are always listed.",
     OPT_LOOT = "Loot",
     OPT_LOOT_UNIT = "What a creature drops",
-    OPT_LOOT_UNIT_TIP = "When you hover a creature, list what you have already looted from that kind of creature, and how often.",
+    OPT_LOOT_UNIT_TIP = "When you hover a creature, list what you have already looted from that kind of creature.",
     OPT_LOOT_REAGENTS = "Only crafting reagents",
     OPT_LOOT_REAGENTS_TIP = "On a creature, list only the items professions use, such as meat, leather and cloth.",
     OPT_LOOT_ITEM = "Where an item drops",
@@ -61,6 +61,12 @@ local L = {
     BOOK_EMPTY_ALMOST = "No recipe with only some of its reagents in your bags and bank.",
     BOOK_EMPTY_ALL = "No recipes yet: open each of your profession windows once.",
     BOOK_EMPTY_BEASTS = "No creatures yet: they are listed as you loot them.",
+    BOOK_SEARCH = "Search a recipe, reagent or creature",
+    BOOK_NO_MATCH = "Nothing found.",
+    BOOK_BY_KIND = "By type",
+    BOOK_BY_PLACE = "By place",
+    BOOK_FISHING = "Fishing",
+    BOOK_NO_TYPE = "Unknown type",
     BOOK_UNPLACED = "Unidentified",
     BOOK_FORGET = "Clear these creatures",
     BOOK_FORGET_CONFIRM = "Forget the %d creatures with no known place, and what they dropped?",
@@ -78,7 +84,7 @@ local L = {
     HELP = {
         "/easyrecipe book - open the recipe book",
         "/easyrecipe config - open the options",
-        "/easyrecipe on | off - enable or disable the tooltip lines",
+        "/easyrecipe on | off - show or hide the recipes in tooltips",
         "/easyrecipe max <number> - recipes shown per tooltip",
         "/easyrecipe reset - clear this character's recorded recipes",
         "/easyrecipe resetloot - clear the loot records of every character",
@@ -90,8 +96,8 @@ if GetLocale() == "ptBR" then
     L.MORE = "+%d receitas (segure Shift ao passar o mouse)"
     L.HINT = "abra a janela de cada profissão uma vez para que suas receitas sejam registradas."
     L.SCANNED = "%d receitas conhecidas registradas."
-    L.ENABLED = "linhas no tooltip ativadas."
-    L.DISABLED = "linhas no tooltip desativadas."
+    L.ENABLED = "receitas no tooltip ativadas."
+    L.DISABLED = "receitas no tooltip desativadas."
     L.MAX_SET = "mostrando até %d receitas por tooltip."
     L.MAX_USAGE = "uso: /easyrecipe max <número>"
     L.RESET = "dados de receitas apagados. Abra suas profissões de novo para refazer o registro."
@@ -119,7 +125,7 @@ if GetLocale() == "ptBR" then
     L.OPT_LEVEL_TIP = "Uma receita é listada quando o nível exigido para usar o item que ela faz está dentro desta faixa. Receitas de itens que qualquer um pode usar, como barras e peças de tecido, e de encantamentos são sempre listadas."
     L.OPT_LOOT = "Saque"
     L.OPT_LOOT_UNIT = "O que uma criatura deixa cair"
-    L.OPT_LOOT_UNIT_TIP = "Ao passar o mouse numa criatura, lista o que você já saqueou desse tipo de criatura e com que frequência."
+    L.OPT_LOOT_UNIT_TIP = "Ao passar o mouse numa criatura, lista o que você já saqueou desse tipo de criatura."
     L.OPT_LOOT_REAGENTS = "Só reagentes de profissão"
     L.OPT_LOOT_REAGENTS_TIP = "Na criatura, lista só os itens que as profissões usam, como carne, couro e tecido."
     L.OPT_LOOT_ITEM = "Onde um item cai"
@@ -146,6 +152,12 @@ if GetLocale() == "ptBR" then
     L.BOOK_EMPTY_ALMOST = "Nenhuma receita com só parte dos reagentes na bolsa e no banco."
     L.BOOK_EMPTY_ALL = "Nenhuma receita ainda: abra a janela de cada profissão uma vez."
     L.BOOK_EMPTY_BEASTS = "Nenhuma criatura ainda: elas aparecem conforme você saqueia."
+    L.BOOK_SEARCH = "Buscar receita, reagente ou criatura"
+    L.BOOK_NO_MATCH = "Nada encontrado."
+    L.BOOK_BY_KIND = "Por tipo"
+    L.BOOK_BY_PLACE = "Por local"
+    L.BOOK_FISHING = "Pesca"
+    L.BOOK_NO_TYPE = "Tipo desconhecido"
     L.BOOK_UNPLACED = "Não identificado"
     L.BOOK_FORGET = "Limpar estas criaturas"
     L.BOOK_FORGET_CONFIRM = "Esquecer as %d criaturas sem local conhecido e o que elas deixaram cair?"
@@ -163,7 +175,7 @@ if GetLocale() == "ptBR" then
     L.HELP = {
         "/easyrecipe book - abre o livro de receitas",
         "/easyrecipe config - abre as opções",
-        "/easyrecipe on | off - ativa ou desativa as linhas no tooltip",
+        "/easyrecipe on | off - mostra ou esconde as receitas no tooltip",
         "/easyrecipe max <número> - receitas mostradas por tooltip",
         "/easyrecipe reset - apaga as receitas registradas deste personagem",
         "/easyrecipe resetloot - apaga os registros de saque de todos os personagens",

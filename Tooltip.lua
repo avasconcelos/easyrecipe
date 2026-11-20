@@ -70,13 +70,13 @@ end
 -- to the game and to UI addons such as EllesmereUI.
 local function OnItemTooltip(tooltip, data)
     local db = ns.db
-    if not (db and db.enabled) then return end
+    if not db then return end
     if tooltip ~= GameTooltip and tooltip ~= ItemRefTooltip then return end
     if tooltip.IsForbidden and tooltip:IsForbidden() then return end
 
     local itemID = data and data.id
     if itemID == nil or (issecretvalue and issecretvalue(itemID)) or type(itemID) ~= "number" then return end
-    AddRecipeLines(tooltip, itemID, db)
+    if db.enabled then AddRecipeLines(tooltip, itemID, db) end
     ns.AddDropLines(tooltip, itemID)
 end
 

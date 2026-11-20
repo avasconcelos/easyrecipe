@@ -19,6 +19,8 @@ local DEFAULTS = {
     lootOnItem = true,
     lootReagentsOnly = true,
     introShown = false,
+    -- The book's Beasts tab: "place" or "kind".
+    beastView = "place",
 }
 ns.DEFAULTS = DEFAULTS
 
