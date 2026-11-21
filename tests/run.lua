@@ -968,6 +968,21 @@ Click("Beasts")
 Fire("BAG_UPDATE_DELAYED")
 RunTimers()
 check(not Printed("could not be set up"), "the window draws without errors")
+Click("All")
+local filter
+for _, frame in ipairs(game.frames) do
+    local label = rawget(frame, "label")
+    if label and label.text == "Blacksmithing" and frame.scripts.OnClick then filter = frame end
+end
+check(filter and filter.shown, "the recipe tabs have a checkbox per profession")
+filter.GetChecked = function() return false end
+filter.scripts.OnClick(filter)
+check(EasyRecipeCharDB.hiddenProfs.Blacksmithing and not BookLine("all", "Copper Axe"), "unchecked, the profession is hidden")
+filter.GetChecked = function() return true end
+filter.scripts.OnClick(filter)
+check(BookLine("all", "Copper Axe"), "checked again, it is back")
+Click("Beasts")
+check(not filter.shown, "the Beasts tab has none")
 
 -- Loot is account-wide and survives a reload.
 ResetGame()

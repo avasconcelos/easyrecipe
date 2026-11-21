@@ -449,8 +449,49 @@ local function Row(i)
     return row
 end
 
+-- One checkbox per profession, the same filter as the options panel's, in
+-- rows under the search box on the recipe tabs.
+local FILTER_WIDTH, FILTER_HEIGHT, FILTER_COLUMNS, LIST_TOP = 110, 22, 4, -100
+local filters = {}
+
+local function Filter(name)
+    local check = filters[name]
+    if not check then
+        check = CreateFrame("CheckButton", nil, window, "UICheckButtonTemplate")
+        check:SetSize(22, 22)
+        check.label = check:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        check.label:SetPoint("LEFT", check, "RIGHT", 0, 1)
+        check.label:SetWidth(FILTER_WIDTH - 24)
+        check.label:SetJustifyH("LEFT")
+        check.label:SetWordWrap(false)
+        check.label:SetText(name)
+        check:SetScript("OnClick", function(self)
+            ns.char.hiddenProfs[name] = not self:GetChecked() or nil
+            Refresh()
+        end)
+        filters[name] = check
+    end
+    return check
+end
+
+local function LayoutFilters()
+    local shown = tab ~= "beasts"
+    local names = shown and ns.Professions() or {}
+    for _, check in pairs(filters) do check:Hide() end
+    for i, name in ipairs(names) do
+        local check = Filter(name)
+        check:ClearAllPoints()
+        check:SetPoint("TOPLEFT", 22 + ((i - 1) % FILTER_COLUMNS) * FILTER_WIDTH,
+            LIST_TOP + 2 - math.floor((i - 1) / FILTER_COLUMNS) * FILTER_HEIGHT)
+        check:SetChecked(not ns.char.hiddenProfs[name])
+        check:Show()
+    end
+    window.scroll:SetPoint("TOPLEFT", 20, LIST_TOP - math.ceil(#names / FILTER_COLUMNS) * FILTER_HEIGHT)
+end
+
 function Refresh()
     if not (window and window:IsShown()) then return end
+    LayoutFilters()
     local lines = ns.BookLines(tab)
     for i, line in ipairs(lines) do
         local row = Row(i)
@@ -560,8 +601,9 @@ local function Build()
     frame.view = view
 
     local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 20, -100)
+    scroll:SetPoint("TOPLEFT", 20, LIST_TOP)
     scroll:SetPoint("BOTTOMRIGHT", -36, 18)
+    frame.scroll = scroll
     content = CreateFrame("Frame", nil, scroll)
     content:SetSize(WIDTH - 60, 1)
     scroll:SetScrollChild(content)
