@@ -186,6 +186,7 @@ local function InstallGame()
         function widget:SetText(text) self.text = text end
         function widget:GetStringHeight() return 120 end
         function widget:CreateFontString() return NewWidget() end
+        function widget:CreateTexture() return NewWidget() end
         return setmetatable(widget, { __index = function() return function() end end })
     end
     UIParent = NewWidget("UIParent")
@@ -1064,6 +1065,22 @@ filter.scripts.OnClick(filter)
 check(BookLine("all", "Copper Axe"), "checked again, it is back")
 Click("Bestiary")
 check(not filter.shown, "the Bestiary tab has none")
+
+-- Shopping list on Almost / All: pick recipes, set how many, total what to buy.
+ns.ShopClear()
+OpenProfession()
+ns.ShopToggle(2738)
+ns.ShopSet(2738, 2)
+equal(ns.ShopList()[1], 2738, "a recipe can be added to the shopping list")
+-- 2738 Copper Axe needs 6 copper and 2 flux each → 12 copper, 4 flux for x2
+local totals = ns.ShopTotals()
+local byID = {}
+for _, row in ipairs(totals) do byID[row.itemID] = row end
+equal(byID[COPPER_BAR].need, 12, "shopping totals reagents by how many crafts")
+equal(byID[FLUX].need, 4, "and every reagent")
+check(byID[COPPER_BAR].buy >= 0 and byID[FLUX].buy >= 0, "buy is need minus what is held")
+ns.ShopClear()
+equal(#ns.ShopList(), 0, "the shopping list clears")
 
 -- Loot is account-wide and survives a reload.
 ResetGame()

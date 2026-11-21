@@ -2,6 +2,8 @@ local _, ns = ...
 local L = ns.L
 
 local WIDTH, HEIGHT, ROW_HEIGHT, INDENT = 480, 540, 18, 16
+-- Same width as the book so long recipe names fit on one line.
+local SHOP_WIDTH, SHOP_ROW = WIDTH, 20
 -- Tab, its label; the first is shown when the book opens for the first time.
 local TABS = {
     { "craftable", "BOOK_CRAFTABLE" },
@@ -24,6 +26,14 @@ local tab = "craftable"
 local toggled = {}
 -- What the search box holds, lowercased, or nil.
 local search
+-- Shopping list for recipe tabs: recipeID -> how many to make.
+local cart = {}
+-- Session stays open while one pane is folded away.
+local sessionOpen, foldBook, foldShop = false, false, false
+
+local function ShoppingTab()
+    return tab == "craftable" or tab == "almost" or tab == "all"
+end
 
 function ns.SetBookSearch(text)
     text = type(text) == "string" and text:match("^%s*(.-)%s*$"):lower() or ""
@@ -168,6 +178,61 @@ local function CompareRecipes(a, b)
     return a < b
 end
 
+function ns.ShopToggle(recipeID)
+    if cart[recipeID] then
+        cart[recipeID] = nil
+    else
+        cart[recipeID] = 1
+    end
+end
+
+function ns.ShopSet(recipeID, qty)
+    qty = math.floor(tonumber(qty) or 0)
+    if qty < 1 or not ns.recipes[recipeID] then
+        cart[recipeID] = nil
+    else
+        cart[recipeID] = math.min(qty, 999)
+    end
+end
+
+function ns.ShopClear()
+    wipe(cart)
+end
+
+function ns.ShopList()
+    local list = {}
+    for recipeID, qty in pairs(cart) do
+        if ns.recipes[recipeID] and type(qty) == "number" and qty > 0 then
+            list[#list + 1] = recipeID
+        end
+    end
+    table.sort(list, CompareRecipes)
+    return list
+end
+
+-- Reagents to buy across the shopping list: need, have, and still short.
+function ns.ShopTotals()
+    local need = {}
+    for recipeID, qty in pairs(cart) do
+        local recipe = ns.recipes[recipeID]
+        if recipe and type(qty) == "number" and qty > 0 then
+            for itemID, per in pairs(recipe.reagents) do
+                need[itemID] = (need[itemID] or 0) + per * qty
+            end
+        end
+    end
+    local list = {}
+    for itemID, total in pairs(need) do
+        local have = Have(itemID)
+        list[#list + 1] = { itemID = itemID, need = total, have = have, buy = math.max(0, total - have) }
+    end
+    table.sort(list, function(a, b)
+        if a.buy ~= b.buy then return a.buy > b.buy end
+        return a.itemID < b.itemID
+    end)
+    return list
+end
+
 local function RecipeFound(recipe)
     if not search or Matches(recipe.name) then return true end
     for itemID in pairs(recipe.reagents) do
@@ -198,9 +263,15 @@ local function RecipeLines(lines, mode)
             local recipe = ns.recipes[recipeID]
             local text = WithIcon(recipe.name, recipe.icon)
             if times[recipeID] > 0 then text = text .. "  x" .. times[recipeID] end
-            local open = Header(lines, text, ns.DIFFICULTY_COLOR[recipe.diff] or ns.NO_DIFFICULTY_COLOR,
+            if mode == "craftable" or mode == "almost" or mode == "all" then
+                text = (cart[recipeID] and "|cff33ff99[+]|r " or "|cff666666[ ]|r ") .. text
+            end
+            local openRecipe = Header(lines, text, ns.DIFFICULTY_COLOR[recipe.diff] or ns.NO_DIFFICULTY_COLOR,
                 "recipe:" .. recipeID, true, 1, recipe.out)
-            for _, itemID in ipairs(open and SortedKeys(recipe.reagents) or {}) do
+            if mode == "craftable" or mode == "almost" or mode == "all" then
+                lines[#lines].select = recipeID
+            end
+            for _, itemID in ipairs(openRecipe and SortedKeys(recipe.reagents) or {}) do
                 local need, have = recipe.reagents[itemID], Have(itemID)
                 local name, icon = ns.ItemDisplay(itemID)
                 Line(lines, ("%s  %d/%d"):format(WithIcon(name, icon), have, need),
@@ -497,6 +568,18 @@ local function Row(i)
             local trash = self:GetParent().trash
             if trash then ns.BookAction(trash[1], trash[2]) end
         end)
+        -- Adds or removes the recipe from the shopping list (Almost / All).
+        row.cartBtn = CreateFrame("Button", nil, row)
+        row.cartBtn:SetSize(24, 24)
+        row.cartBtn:SetPoint("RIGHT", row.trashBtn, "LEFT", -2, 0)
+        row.cartBtn.label = row.cartBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        row.cartBtn.label:SetPoint("CENTER", 0, 1)
+        row.cartBtn:SetScript("OnClick", function(self)
+            local id = self:GetParent().select
+            if not id then return end
+            ns.ShopToggle(id)
+            Refresh()
+        end)
         row:SetScript("OnEnter", ShowItemTooltip)
         row:SetScript("OnLeave", function() GameTooltip:Hide() end)
         row:SetScript("OnClick", function(self)
@@ -508,6 +591,205 @@ local function Row(i)
         rows[i] = row
     end
     return row
+end
+
+local shopRows = {}
+
+local function ShopRow(i)
+    local row = shopRows[i]
+    if not row then
+        row = CreateFrame("Frame", nil, window.shopContent)
+        row:SetHeight(SHOP_ROW)
+        row:SetPoint("TOPLEFT", 0, -(i - 1) * SHOP_ROW)
+        row:SetPoint("TOPRIGHT", 0, -(i - 1) * SHOP_ROW)
+        row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        row.label:SetPoint("LEFT", 2, 0)
+        row.label:SetJustifyH("LEFT")
+        row.label:SetWordWrap(false)
+        row.minus = CreateFrame("Button", nil, row)
+        row.minus:SetSize(20, 20)
+        row.minus:SetPoint("RIGHT", -42, 0)
+        row.minus.label = row.minus:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        row.minus.label:SetPoint("CENTER")
+        row.minus.label:SetText("-")
+        row.plus = CreateFrame("Button", nil, row)
+        row.plus:SetSize(20, 20)
+        row.plus:SetPoint("RIGHT", -2, 0)
+        row.plus.label = row.plus:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        row.plus.label:SetPoint("CENTER")
+        row.plus.label:SetText("+")
+        row.qty = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        row.qty:SetPoint("RIGHT", row.plus, "LEFT", -2, 0)
+        row.qty:SetWidth(28)
+        row.qty:SetJustifyH("CENTER")
+        row.minus:SetScript("OnClick", function(self)
+            local id = self:GetParent().recipeID
+            if id then ns.ShopSet(id, (cart[id] or 1) - 1); Refresh() end
+        end)
+        row.plus:SetScript("OnClick", function(self)
+            local id = self:GetParent().recipeID
+            if id then ns.ShopSet(id, (cart[id] or 0) + 1); Refresh() end
+        end)
+        shopRows[i] = row
+    end
+    return row
+end
+
+-- Slim edge tab; red matches Blizzard close-button / RED_FONT_COLOR.
+local function FoldTab(parent)
+    local button = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    button:SetSize(14, 40)
+    button:SetFrameLevel(parent:GetFrameLevel() + 30)
+    button:SetBackdrop({
+        bgFile = [[Interface\Buttons\WHITE8x8]],
+        edgeFile = [[Interface\Buttons\WHITE8x8]],
+        edgeSize = 1,
+        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+    })
+    local red = RED_FONT_COLOR or { r = 1, g = 0.1, b = 0.1 }
+    button:SetBackdropColor(red.r * 0.55, red.g * 0.55, red.b * 0.55, 0.95)
+    button:SetBackdropBorderColor(red.r * 0.35, red.g * 0.35, red.b * 0.35, 1)
+    button.label = button:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    button.label:SetPoint("CENTER", 0, 1)
+    button.label:SetTextColor(1, 0.95, 0.9)
+    button:SetScript("OnEnter", function(self)
+        self:SetBackdropColor(red.r * 0.75, red.g * 0.75, red.b * 0.75, 1)
+        if self.tip then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText(self.tip)
+            GameTooltip:Show()
+        end
+    end)
+    button:SetScript("OnLeave", function(self)
+        self:SetBackdropColor(red.r * 0.55, red.g * 0.55, red.b * 0.55, 0.95)
+        GameTooltip:Hide()
+    end)
+    button:Hide()
+    return button
+end
+
+local function StyleFold(button, parent, point, relative, x, y, arrow, tip)
+    if not button then return end
+    button:SetParent(parent)
+    button:SetFrameLevel(parent:GetFrameLevel() + 30)
+    button:ClearAllPoints()
+    button:SetPoint(point, parent, relative, x, y)
+    button.label:SetText(arrow)
+    button.tip = tip
+    button:Show()
+end
+
+-- Only one close button: on the list when it is visible, otherwise on the book.
+local function PlaceCloseX()
+    local bookClose = window and window.close
+    local shopClose = window and window.shop and window.shop.close
+    if not (bookClose and shopClose) then return end
+    if sessionOpen and ShoppingTab() and not foldShop then
+        bookClose:Hide()
+        shopClose:Show()
+    else
+        shopClose:Hide()
+        bookClose:Show()
+    end
+end
+
+local function RefreshShop()
+    local shop = window and window.shop
+    if not shop then return end
+    local bookTab, shopTab = window.bookFold, window.shopFold
+
+    if not (sessionOpen and ShoppingTab()) then
+        local restoreBook = foldBook and window and not window:IsShown()
+        foldBook, foldShop = false, false
+        shop:Hide()
+        if bookTab then bookTab:Hide() end
+        if shopTab then shopTab:Hide() end
+        if restoreBook then window:Show() end
+        PlaceCloseX()
+        return
+    end
+
+    if foldBook then
+        if window:IsShown() then window:Hide() end
+    elseif not window:IsShown() then
+        window:Show()
+    end
+
+    if foldShop then
+        shop:Hide()
+        if bookTab then bookTab:Hide() end
+        -- Book alone: > on the right opens the list.
+        StyleFold(shopTab, window, "LEFT", "RIGHT", -4, 0, ">", L.BOOK_SHOW_SHOP)
+        PlaceCloseX()
+        return
+    end
+
+    shop:ClearAllPoints()
+    if foldBook then
+        shop:SetPoint("TOPLEFT", window, "TOPLEFT", 0, 0)
+        if shopTab then shopTab:Hide() end
+        -- List alone: < on the left opens the book.
+        StyleFold(bookTab, shop, "RIGHT", "LEFT", 4, 0, "<", L.BOOK_SHOW_BOOK)
+    else
+        shop:SetPoint("TOPLEFT", window, "TOPRIGHT", -4, 0)
+        shop:SetPoint("BOTTOMLEFT", window, "BOTTOMRIGHT", -4, 0)
+        -- Both open: > left of book hides book; < right of list hides list.
+        StyleFold(bookTab, window, "RIGHT", "LEFT", 4, 0, ">", L.BOOK_HIDE_BOOK)
+        StyleFold(shopTab, shop, "LEFT", "RIGHT", -4, 0, "<", L.BOOK_HIDE_SHOP)
+    end
+    shop:Show()
+    PlaceCloseX()
+
+    local list, totals, lines = ns.ShopList(), ns.ShopTotals(), {}
+    if #list == 0 then
+        lines[1] = { text = L.BOOK_SHOP_EMPTY, color = GRAY }
+    else
+        for _, recipeID in ipairs(list) do
+            local recipe = ns.recipes[recipeID]
+            lines[#lines + 1] = {
+                text = WithIcon(recipe.name, recipe.icon),
+                color = GOLD,
+                recipeID = recipeID,
+                qty = cart[recipeID],
+            }
+        end
+        lines[#lines + 1] = { text = " ", color = GRAY }
+        lines[#lines + 1] = { text = L.BOOK_SHOP_NEED, color = GOLD }
+        for _, entry in ipairs(totals) do
+            local name, icon = ns.ItemDisplay(entry.itemID)
+            local color = entry.buy > 0 and MISSING_COLOR or HAVE_COLOR
+            lines[#lines + 1] = {
+                text = ("%s  %d  |cff999999(%s)|r"):format(WithIcon(name, icon), entry.buy, L.BOOK_SHOP_HAVE:format(entry.have)),
+                color = color,
+                itemID = entry.itemID,
+            }
+        end
+    end
+    for i, line in ipairs(lines) do
+        local row = ShopRow(i)
+        row.label:ClearAllPoints()
+        row.label:SetPoint("LEFT", 2, 0)
+        row.label:SetText(line.text)
+        row.label:SetTextColor(line.color[1], line.color[2], line.color[3])
+        row.recipeID = line.recipeID
+        if line.qty then
+            row.qty:SetText(tostring(line.qty))
+            row.qty:Show()
+            row.minus:Show()
+            row.plus:Show()
+            row.label:SetPoint("RIGHT", row.minus, "LEFT", -4, 0)
+        else
+            row.qty:Hide()
+            row.minus:Hide()
+            row.plus:Hide()
+            row.label:SetPoint("RIGHT", -2, 0)
+        end
+        row:Show()
+    end
+    for i = #lines + 1, #shopRows do
+        shopRows[i]:Hide()
+    end
+    window.shopContent:SetHeight(math.max(1, #lines * SHOP_ROW))
 end
 
 -- One checkbox per profession, the same filter as the options panel's, in
@@ -551,40 +833,57 @@ local function LayoutFilters()
 end
 
 function Refresh()
-    if not (window and window:IsShown()) then return end
-    LayoutFilters()
-    local lines = ns.BookLines(tab)
-    for i, line in ipairs(lines) do
-        local row = Row(i)
-        row.label:ClearAllPoints()
-        row.label:SetPoint("LEFT", line.indent * INDENT, 0)
-        row.label:SetPoint("RIGHT", row.trashBtn, "LEFT", -4, 0)
-        row.label:SetText(line.text)
-        row.label:SetTextColor(line.color[1], line.color[2], line.color[3])
-        row.itemID = line.itemID
-        row.toggle = line.toggle
-        row.trash = line.trash
-        if line.trash then row.trashBtn:Show() else row.trashBtn:Hide() end
-        row:Show()
+    if not window then return end
+    if window:IsShown() then
+        LayoutFilters()
+        local lines = ns.BookLines(tab)
+        for i, line in ipairs(lines) do
+            local row = Row(i)
+            row.label:ClearAllPoints()
+            row.label:SetPoint("LEFT", line.indent * INDENT, 0)
+            row.itemID = line.itemID
+            row.toggle = line.toggle
+            row.trash = line.trash
+            row.select = line.select
+            if line.trash then row.trashBtn:Show() else row.trashBtn:Hide() end
+            if line.select then
+                row.cartBtn:Show()
+                row.cartBtn.label:SetText(cart[line.select] and "|cff33ff99+|r" or "|cff999999+|r")
+                row.label:SetPoint("RIGHT", row.cartBtn, "LEFT", -4, 0)
+            else
+                row.cartBtn:Hide()
+                row.label:SetPoint("RIGHT", line.trash and row.trashBtn or row, line.trash and "LEFT" or "RIGHT", -4, 0)
+            end
+            row.label:SetText(line.text)
+            row.label:SetTextColor(line.color[1], line.color[2], line.color[3])
+            row:Show()
+        end
+        for i = #lines + 1, #rows do
+            rows[i]:Hide()
+        end
+        content:SetHeight(math.max(1, #lines * ROW_HEIGHT))
+        for _, button in ipairs(window.tabs) do
+            local active = button.mode == tab
+            if button.underline then
+                if active then button.underline:Show() else button.underline:Hide() end
+            end
+            if button.label then
+                if active then button.label:SetTextColor(1, 0.82, 0) else button.label:SetTextColor(0.7, 0.7, 0.7) end
+            end
+        end
+        if tab == "beasts" then
+            window.view:SetText(ns.db.beastView == "kind" and L.BOOK_BY_PLACE or L.BOOK_BY_KIND)
+            window.view:Show()
+            local hasLoot = next(ns.db.loot and ns.db.loot.sources or {}) ~= nil
+            if hasLoot and not search then window.clearAll:Show() else window.clearAll:Hide() end
+            window.scroll:SetPoint("BOTTOMRIGHT", -36, hasLoot and not search and 48 or 18)
+        else
+            window.view:Hide()
+            window.clearAll:Hide()
+            window.scroll:SetPoint("BOTTOMRIGHT", -36, 18)
+        end
     end
-    for i = #lines + 1, #rows do
-        rows[i]:Hide()
-    end
-    content:SetHeight(math.max(1, #lines * ROW_HEIGHT))
-    for _, button in ipairs(window.tabs) do
-        if button.mode == tab then button:LockHighlight() else button:UnlockHighlight() end
-    end
-    if tab == "beasts" then
-        window.view:SetText(ns.db.beastView == "kind" and L.BOOK_BY_PLACE or L.BOOK_BY_KIND)
-        window.view:Show()
-        local hasLoot = next(ns.db.loot and ns.db.loot.sources or {}) ~= nil
-        if hasLoot and not search then window.clearAll:Show() else window.clearAll:Hide() end
-        window.scroll:SetPoint("BOTTOMRIGHT", -36, hasLoot and not search and 48 or 18)
-    else
-        window.view:Hide()
-        window.clearAll:Hide()
-        window.scroll:SetPoint("BOTTOMRIGHT", -36, 18)
-    end
+    RefreshShop()
 end
 
 -- Bag updates come in bursts while looting or crafting.
@@ -628,21 +927,116 @@ local function Build()
     title:SetText(L.BOOK_TITLE)
     local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", -6, -6)
+    frame.close = close
 
+    -- Tab strip (not red panel buttons): label + gold underline when active.
     frame.tabs = {}
-    local tabWidth = (WIDTH - 40) / #TABS
+    local tabWidth = (WIDTH - 36) / #TABS
     for i, info in ipairs(TABS) do
-        local button = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-        button:SetSize(tabWidth - 4, 22)
-        button:SetPoint("TOPLEFT", 20 + (i - 1) * tabWidth, -46)
-        button:SetText(L[info[2]])
+        local button = CreateFrame("Button", nil, frame)
+        button:SetSize(tabWidth - 2, 26)
+        button:SetPoint("TOPLEFT", 18 + (i - 1) * tabWidth, -40)
+        button.label = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        button.label:SetPoint("CENTER", 0, 1)
+        button.label:SetText(L[info[2]])
+        button.text = L[info[2]]
         button.mode = info[1]
+        button.underline = button:CreateTexture(nil, "OVERLAY")
+        if button.underline then
+            button.underline:SetHeight(2)
+            button.underline:SetPoint("BOTTOMLEFT", 4, 1)
+            button.underline:SetPoint("BOTTOMRIGHT", -4, 1)
+            pcall(function() button.underline:SetColorTexture(1, 0.82, 0, 1) end)
+            button.underline:Hide()
+        end
         button:SetScript("OnClick", function(self)
             tab = self.mode
             Refresh()
         end)
+        button:SetScript("OnEnter", function(self)
+            if self.mode ~= tab then self.label:SetTextColor(1, 1, 1) end
+        end)
+        button:SetScript("OnLeave", function(self)
+            if self.mode ~= tab then self.label:SetTextColor(0.7, 0.7, 0.7) end
+        end)
         frame.tabs[i] = button
     end
+
+    -- Shopping assistant as its own window, docked to the book's right side.
+    local shop = CreateFrame("Frame", "EasyRecipeShop", UIParent, "BackdropTemplate")
+    shop:Hide()
+    shop:SetSize(SHOP_WIDTH, HEIGHT)
+    shop:SetFrameStrata("HIGH")
+    shop:SetClampedToScreen(true)
+    shop:EnableMouse(true)
+    shop:SetBackdrop({
+        bgFile = [[Interface\DialogFrame\UI-DialogBox-Background-Dark]],
+        edgeFile = [[Interface\DialogFrame\UI-DialogBox-Border]],
+        tile = true,
+        tileSize = 32,
+        edgeSize = 32,
+        insets = { left = 11, right = 12, top = 12, bottom = 11 },
+    })
+    if UISpecialFrames then table.insert(UISpecialFrames, "EasyRecipeShop") end
+    local shopTitle = shop:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    shopTitle:SetPoint("TOP", 0, -18)
+    shopTitle:SetText(L.BOOK_SHOP)
+    local shopClose = CreateFrame("Button", nil, shop, "UIPanelCloseButton")
+    shopClose:SetPoint("TOPRIGHT", -6, -6)
+    shopClose:SetScript("OnClick", function()
+        frame:Hide()
+    end)
+    shop.close = shopClose
+    shopClose:Hide()
+    local clearShop = CreateFrame("Button", nil, shop, "UIPanelButtonTemplate")
+    clearShop:SetSize(SHOP_WIDTH - 48, 22)
+    clearShop:SetPoint("TOP", 0, -42)
+    clearShop:SetText(L.BOOK_SHOP_CLEAR)
+    clearShop:SetScript("OnClick", function()
+        ns.ShopClear()
+        Refresh()
+    end)
+    local shopScroll = CreateFrame("ScrollFrame", nil, shop, "UIPanelScrollFrameTemplate")
+    shopScroll:SetPoint("TOPLEFT", 16, -72)
+    shopScroll:SetPoint("BOTTOMRIGHT", -32, 16)
+    local shopContent = CreateFrame("Frame", nil, shopScroll)
+    shopContent:SetSize(SHOP_WIDTH - 56, 1)
+    shopScroll:SetScrollChild(shopContent)
+    frame.shop, frame.shopContent = shop, shopContent
+
+    frame.bookFold = FoldTab(frame)
+    frame.bookFold:SetScript("OnClick", function()
+        foldBook = not foldBook
+        Refresh()
+    end)
+    frame.shopFold = FoldTab(frame)
+    frame.shopFold:SetScript("OnClick", function()
+        foldShop = not foldShop
+        Refresh()
+    end)
+
+    frame:SetScript("OnHide", function()
+        if foldBook then return end
+        sessionOpen = false
+        foldShop = false
+        shop:Hide()
+        if frame.bookFold then frame.bookFold:Hide() end
+        if frame.shopFold then frame.shopFold:Hide() end
+    end)
+    shop:SetScript("OnHide", function()
+        if foldShop then return end
+        if foldBook then
+            foldBook, sessionOpen = false, false
+            if frame.bookFold then frame.bookFold:Hide() end
+            if frame.shopFold then frame.shopFold:Hide() end
+            return
+        end
+        if sessionOpen and ShoppingTab() then
+            foldShop = true
+            StyleFold(frame.shopFold, frame, "LEFT", "RIGHT", -4, 0, ">", L.BOOK_SHOW_SHOP)
+            if frame.bookFold then frame.bookFold:Hide() end
+        end
+    end)
 
     -- A plain input box: SearchBoxTemplate is Blizzard UI on some clients and
     -- can throw "only available to the Blizzard UI".
@@ -696,16 +1090,19 @@ local function Build()
     frame:SetScript("OnEvent", function(self)
         if self:IsShown() then QueueRefresh() end
     end)
-    frame:SetScript("OnShow", Refresh)
+    frame:HookScript("OnShow", Refresh)
     return frame
 end
 
 function ns.ToggleBook()
     -- Kept only once complete, so a failed build is not shown half made.
     window = window or Build()
-    if window:IsShown() then
+    if sessionOpen then
+        sessionOpen, foldBook, foldShop = false, false, false
         window:Hide()
+        if window.shop then window.shop:Hide() end
     else
+        sessionOpen, foldBook, foldShop = true, false, false
         window:Show()
     end
 end
