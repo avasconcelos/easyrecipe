@@ -70,6 +70,8 @@ local L = {
     BOOK_UNPLACED = "Unidentified",
     BOOK_FORGET = "Clear these creatures",
     BOOK_FORGET_CONFIRM = "Forget the %d creatures with no known place, and what they dropped?",
+    BOOK_FORGET_ALL = "Clear everything learned from loot",
+    BOOK_FORGET_ALL_CONFIRM = "Forget every creature, fishing spot and opened item, on every character, and start over?",
     INTRO_TITLE = "Welcome to EasyRecipe",
     INTRO_TEXT = "EasyRecipe learns along with your character: it starts empty and fills in as you play.\n\n"
         .. "1. Open each of your profession windows once, so your recipes can be recorded.\n\n"
@@ -161,6 +163,8 @@ if GetLocale() == "ptBR" then
     L.BOOK_UNPLACED = "Não identificado"
     L.BOOK_FORGET = "Limpar estas criaturas"
     L.BOOK_FORGET_CONFIRM = "Esquecer as %d criaturas sem local conhecido e o que elas deixaram cair?"
+    L.BOOK_FORGET_ALL = "Limpar tudo que foi aprendido do saque"
+    L.BOOK_FORGET_ALL_CONFIRM = "Esquecer todas as criaturas, lugares de pesca e itens abertos, em todos os personagens, e começar do zero?"
     L.INTRO_TITLE = "Bem-vindo ao EasyRecipe"
     L.INTRO_TEXT = "O EasyRecipe aprende junto com o seu personagem: começa vazio e vai se completando enquanto você joga.\n\n"
         .. "1. Abra a janela de cada profissão uma vez, para que suas receitas sejam registradas.\n\n"

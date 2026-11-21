@@ -935,6 +935,37 @@ ns.BookAction(forget.action)
 check(not BookLine("beasts", "Unidentified") and not ns.LootSource("npc:999"), "cleared, they are gone")
 check(ns.LootSource("npc:" .. CRAB), "and the others stay")
 
+-- A game that hides the GUIDs of units: the unit the tooltip shows gives the type.
+EasyRecipeDB.loot.sources["npc:998"] = { kind = "npc", name = "Grey Bear", looted = 1, items = {} }
+game.units.mouseover = { guid = "hidden", ctype = "Beast", family = "Bear" }
+HoverUnit(CorpseGUID(998, 1), "Grey Bear")
+game.units.mouseover = nil
+equal(ns.LootSource("npc:998").family, "Bear", "the tooltip's unit gives the type when GUIDs cannot be compared")
+
+-- Some clients only answer UnitCreatureType for the selected unit.
+EasyRecipeDB.loot.sources["npc:997"] = { kind = "npc", name = "Vengeful", looted = 1, items = {} }
+game.units.mouseover = { guid = CorpseGUID(997, 1), name = "Vengeful" }
+game.units.target = { guid = CorpseGUID(997, 1), name = "Vengeful", ctype = "Humanoid" }
+HoverUnit(CorpseGUID(997, 1), "Vengeful")
+equal(ns.LootSource("npc:997").ctype, "Humanoid", "the selected unit gives the type when mouseover does not")
+game.units.mouseover, game.units.target = nil, nil
+
+local forgetAll = BookLine("beasts", "Clear everything learned from loot")
+check(forgetAll and forgetAll.action == "forgetAll", "the Beasts tab can clear everything")
+ns.SetBookSearch("crab")
+check(not BookLine("beasts", "Clear everything learned from loot"), "but not while searching")
+ns.SetBookSearch("")
+local savedLoot = {}
+for key, source in pairs(EasyRecipeDB.loot.sources) do savedLoot[key] = source end
+local savedItems = {}
+for id, info in pairs(EasyRecipeDB.loot.items) do savedItems[id] = info end
+ns.BookAction(forgetAll.action)
+check(next(EasyRecipeDB.loot.sources) == nil, "cleared, nothing is left")
+equal(ns.BookLines("beasts")[1].text, "No creatures yet: they are listed as you loot them.", "and the tab says so")
+for key, source in pairs(savedLoot) do EasyRecipeDB.loot.sources[key] = source end
+for id, info in pairs(savedItems) do EasyRecipeDB.loot.items[id] = info end
+ns.RebuildLootIndex()
+
 -- A game that does not count the bank while it is closed: what it held when open stands in.
 game.bags[COPPER_BAR] = 0
 game.containers[-1] = { [1] = { COPPER_BAR, 5 }, [2] = { COPPER_BAR, 3 } }

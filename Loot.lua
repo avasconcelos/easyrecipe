@@ -276,10 +276,19 @@ local function UnitOf(guid)
 end
 
 -- The creature's type, such as Beast or Humanoid, and for beasts their
--- family, such as Bear.
-local function RememberKind(source, unit)
-    source.ctype = Text(UnitCreatureType, unit) or source.ctype
-    source.family = Text(UnitCreatureFamily, unit) or source.family
+-- family, such as Bear. Target is tried first: some clients only answer for
+-- the selected unit, not for mouseover.
+local function RememberKind(source, preferred)
+    local tried = {}
+    local function Try(unit)
+        if not unit or tried[unit] then return end
+        tried[unit] = true
+        source.ctype = Text(UnitCreatureType, unit) or source.ctype
+        source.family = Text(UnitCreatureFamily, unit) or source.family
+    end
+    Try("target")
+    Try(preferred)
+    Try("mouseover")
 end
 
 local function RecordFishing(count)
@@ -470,6 +479,8 @@ local function OnUnitTooltip(tooltip, data)
     -- without looting it again.
     RememberPlace(source)
     local unit = UnitOf(data.guid)
+    -- Where the game hides unit GUIDs, the unit the tooltip shows is taken as it is.
+    if not unit and tooltip.GetUnit then unit = Text(function() return select(2, tooltip:GetUnit()) end) end
     if unit then RememberKind(source, unit) end
     if not db.lootOnUnit or source.looted == 0 then return end
 

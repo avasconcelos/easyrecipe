@@ -364,33 +364,45 @@ local function BeastLines(lines)
     else
         PlaceView(lines, found)
     end
+    if #lines > 0 and not search then
+        Line(lines, " ", GRAY)
+        Line(lines, L.BOOK_FORGET_ALL, MISSING_COLOR)
+        lines[#lines].action = "forgetAll"
+    end
 end
 
 function ns.SetBeastView(view)
     ns.db.beastView = view
 end
 
-local function Forget()
-    ns.ForgetUnplaced()
-    ns.RefreshBook()
+-- Runs `fn` once the player says yes, where the game has its dialogs.
+local function Confirm(name, text, fn, arg)
+    local function Run()
+        fn()
+        ns.RefreshBook()
+    end
+    if StaticPopupDialogs and StaticPopup_Show then
+        StaticPopupDialogs[name] = StaticPopupDialogs[name] or {
+            text = text,
+            button1 = YES,
+            button2 = NO,
+            OnAccept = Run,
+            timeout = 0,
+            whileDead = true,
+            hideOnEscape = true,
+        }
+        StaticPopup_Show(name, arg)
+    else
+        Run()
+    end
 end
 
 local ACTIONS = {
     forget = function()
-        if StaticPopupDialogs and StaticPopup_Show then
-            StaticPopupDialogs.EASYRECIPE_FORGET = StaticPopupDialogs.EASYRECIPE_FORGET or {
-                text = L.BOOK_FORGET_CONFIRM,
-                button1 = YES,
-                button2 = NO,
-                OnAccept = Forget,
-                timeout = 0,
-                whileDead = true,
-                hideOnEscape = true,
-            }
-            StaticPopup_Show("EASYRECIPE_FORGET", ns.UnplacedCount())
-        else
-            Forget()
-        end
+        Confirm("EASYRECIPE_FORGET", L.BOOK_FORGET_CONFIRM, ns.ForgetUnplaced, ns.UnplacedCount())
+    end,
+    forgetAll = function()
+        Confirm("EASYRECIPE_FORGET_ALL", L.BOOK_FORGET_ALL_CONFIRM, ns.ResetLoot)
     end,
 }
 
