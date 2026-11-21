@@ -4,7 +4,11 @@ local L = ns.L
 local GetItemInfo = C_Item and C_Item.GetItemInfo or GetItemInfo
 local ITEM_SLOT = Enum and Enum.LootSlotType and Enum.LootSlotType.Item or 1
 -- Units that can be the corpse being looted, to learn the creature's name.
-local CORPSE_UNITS = { "mouseover", "target" }
+local CORPSE_UNITS = { "mouseover", "target", "softenemy", "softinteract", "focus" }
+
+-- npcID -> name learned this session from a kill or a target, used when the
+-- loot window opens without that corpse selected.
+local pendingNames = {}
 
 local function IsSecret(value)
     return issecretvalue ~= nil and issecretvalue(value)
@@ -101,11 +105,29 @@ local function Position()
     return math.floor(x * 1000 + 0.5) / 10, math.floor(y * 1000 + 0.5) / 10
 end
 
+local function InDungeon()
+    if IsInInstance then
+        local ok, inside, instanceType = pcall(IsInInstance)
+        if ok and inside and (instanceType == "party" or instanceType == "raid") then return true end
+    end
+    if GetInstanceInfo then
+        local ok, _, instanceType = pcall(GetInstanceInfo)
+        if ok and (instanceType == "party" or instanceType == "raid") then return true end
+    end
+end
+
+local function MarkInstance(zone)
+    if not (zone and loot and InDungeon()) then return end
+    loot.instances = loot.instances or {}
+    loot.instances[zone] = true
+end
+
 -- Where a source is, from where the player stands. Unless `always`, a place
 -- already known is left as it is.
 local function RememberPlace(source, always)
     local zone, sub = Zone()
     if not zone then return end
+    MarkInstance(zone)
     source.zones = source.zones or {}
     source.zones[zone] = true
     source.places = source.places or {}
@@ -117,10 +139,20 @@ local function RememberPlace(source, always)
 end
 
 local zoneWatcher = CreateFrame("Frame")
-for _, event in ipairs({ "PLAYER_ENTERING_WORLD", "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA" }) do
-    zoneWatcher:RegisterEvent(event)
+zoneWatcher:SetScript("OnEvent", function()
+    local zone = Zone()
+    MarkInstance(zone)
+end)
+
+local StartWatchers
+
+-- How a zone is named in the book: outdoor as itself, instances with a tag.
+function ns.PlaceLabel(zone)
+    if loot and loot.instances and loot.instances[zone] then
+        return zone .. " (" .. L.BOOK_DUNGEON .. ")"
+    end
+    return zone
 end
-zoneWatcher:SetScript("OnEvent", function() Zone() end)
 
 local function SortDrops(itemID)
     local sources = loot.sources
@@ -154,6 +186,10 @@ function ns.InitLoot()
     loot = db.loot
     if type(loot.sources) ~= "table" then loot.sources = {} end
     if type(loot.items) ~= "table" then loot.items = {} end
+    if type(loot.instances) ~= "table" then loot.instances = {} end
+    for zone in pairs(loot.instances) do
+        if type(zone) ~= "string" then loot.instances[zone] = nil end
+    end
     for key, source in pairs(loot.sources) do
         if type(key) ~= "string" or type(source) ~= "table" or type(source.items) ~= "table"
             or type(source.looted) ~= "number"
@@ -177,11 +213,13 @@ function ns.InitLoot()
         if type(itemID) ~= "number" or type(info) ~= "table" then loot.items[itemID] = nil end
     end
     ns.RebuildLootIndex()
+    StartWatchers()
 end
 
 function ns.ResetLoot()
     wipe(loot.sources)
     wipe(loot.items)
+    wipe(loot.instances)
     wipe(dropIndex)
     wipe(seenCorpses)
     wipe(seenDrops)
@@ -205,6 +243,26 @@ function ns.ForgetUnplaced()
     for key, source in pairs(loot.sources) do
         if Unplaced(source) then loot.sources[key] = nil end
     end
+    ns.RebuildLootIndex()
+end
+
+function ns.ForgetSources(keys)
+    for _, key in ipairs(keys) do
+        loot.sources[key] = nil
+    end
+    ns.RebuildLootIndex()
+end
+
+-- Drops a zone from every creature; those that only lived there are forgotten.
+function ns.ForgetZone(zone)
+    for key, source in pairs(loot.sources) do
+        if source.places and source.places[zone] then
+            source.places[zone] = nil
+            if source.zones then source.zones[zone] = nil end
+            if not next(source.places) then loot.sources[key] = nil end
+        end
+    end
+    if loot.instances then loot.instances[zone] = nil end
     ns.RebuildLootIndex()
 end
 
@@ -291,6 +349,46 @@ local function RememberKind(source, preferred)
     Try("mouseover")
 end
 
+-- A kill or a click names the creature for later loot, and fills a record that
+-- was already made without a name (common in dungeons).
+local function RememberNpcName(npcID, name)
+    if type(npcID) ~= "number" or type(name) ~= "string" or name == "" or IsSecret(name) then return end
+    pendingNames[npcID] = name
+    local source = loot and loot.sources["npc:" .. npcID]
+    if source and not source.name then source.name = name end
+end
+
+local function LearnSelected(unit)
+    local guid = UnitGUID and UnitGUID(unit)
+    local npcID = NpcID(guid)
+    if not npcID then return end
+    RememberNpcName(npcID, Text(UnitName, unit))
+    local source = loot and loot.sources["npc:" .. npcID]
+    if source then RememberKind(source, unit) end
+end
+
+local nameWatcher = CreateFrame("Frame")
+nameWatcher:SetScript("OnEvent", function(_, event)
+    if not loot then return end
+    if event == "PLAYER_TARGET_CHANGED" then
+        LearnSelected("target")
+        return
+    end
+    if not CombatLogGetCurrentEventInfo then return end
+    local _, subevent, _, _, _, _, _, destGUID, destName = CombatLogGetCurrentEventInfo()
+    if subevent ~= "UNIT_DIED" and subevent ~= "PARTY_KILL" then return end
+    RememberNpcName(NpcID(destGUID), destName)
+end)
+
+StartWatchers = function()
+    for _, event in ipairs({ "PLAYER_ENTERING_WORLD", "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA" }) do
+        zoneWatcher:RegisterEvent(event)
+    end
+    -- Target only: COMBAT_LOG_EVENT_UNFILTERED is forbidden for addons on this client
+    -- and still opens the Blizzard popup even when called through pcall.
+    nameWatcher:RegisterEvent("PLAYER_TARGET_CHANGED")
+end
+
 local function RecordFishing(count)
     local zone = Zone()
     if not zone then return end
@@ -340,8 +438,9 @@ local function RecordSources(count)
             elseif npcID then
                 local key = "npc:" .. npcID
                 local unit = UnitOf(guid)
-                local source = Source(key, "npc", unit and Text(UnitName, unit))
+                local source = Source(key, "npc", (unit and Text(UnitName, unit)) or pendingNames[npcID])
                 if unit then RememberKind(source, unit) end
+                if not source.name and pendingNames[npcID] then source.name = pendingNames[npcID] end
                 if not seenCorpses[guid] then
                     seenCorpses[guid] = true
                     RememberPlace(source, true)
@@ -373,6 +472,9 @@ function ns.OnLootReady()
     local count = GetNumLootItems()
     if type(count) ~= "number" or count == 0 then return end
     windowRecorded = true
+    -- Dungeons are skipped: corpses often have no name/type, and the list fills
+    -- with "Creature #id". The book is for the open world.
+    if InDungeon() then return end
     if IsFishingLoot and IsFishingLoot() then
         RecordFishing(count)
     else
@@ -471,17 +573,23 @@ local function OnUnitTooltip(tooltip, data)
     local source = loot.sources["npc:" .. npcID]
     if not source then return end
     -- A corpse looted without hovering or targeting it left the name out.
-    if not source.name and tooltip.GetUnit then
-        local name = tooltip:GetUnit()
-        if name ~= nil and not IsSecret(name) and type(name) == "string" and name ~= "" then source.name = name end
+    if not source.name then
+        local name = tooltip.GetUnit and Text(function() return tooltip:GetUnit() end)
+        if not name and tooltip.GetName then
+            local left = _G[tooltip:GetName() .. "TextLeft1"]
+            name = left and Text(left.GetText, left)
+        end
+        if name then RememberNpcName(npcID, name) end
     end
     -- A creature in sight is near: where it lives, and what it is, are learned
-    -- without looting it again.
-    RememberPlace(source)
+    -- without looting it again. Dungeons are not stored as places.
+    if not InDungeon() then RememberPlace(source) end
     local unit = UnitOf(data.guid)
     -- Where the game hides unit GUIDs, the unit the tooltip shows is taken as it is.
     if not unit and tooltip.GetUnit then unit = Text(function() return select(2, tooltip:GetUnit()) end) end
     if unit then RememberKind(source, unit) end
+    -- Selecting a creature names and types it even when the tooltip is another.
+    LearnSelected("target")
     if not db.lootOnUnit or source.looted == 0 then return end
 
     local list = ns.SourceItems(source)

@@ -88,10 +88,6 @@ local function RememberBank()
 end
 
 local bankWatcher = CreateFrame("Frame")
-bankWatcher:RegisterEvent("BANKFRAME_OPENED")
-bankWatcher:RegisterEvent("BANKFRAME_CLOSED")
-bankWatcher:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
-bankWatcher:RegisterEvent("BAG_UPDATE_DELAYED")
 bankWatcher:SetScript("OnEvent", function(_, event)
     if not ns.char then return end
     -- At closing the bank's contents may already be gone, so nothing is read then.
@@ -106,6 +102,12 @@ bankWatcher:SetScript("OnEvent", function(_, event)
     end
     RememberBank()
 end)
+
+function ns.InitBank()
+    for _, event in ipairs({ "BANKFRAME_OPENED", "BANKFRAME_CLOSED", "PLAYERBANKSLOTS_CHANGED", "BAG_UPDATE_DELAYED" }) do
+        pcall(bankWatcher.RegisterEvent, bankWatcher, event)
+    end
+end
 
 local function WithIcon(name, icon)
     if icon then return "|T" .. icon .. ":0|t " .. name end
@@ -124,10 +126,12 @@ local function IsOpen(key, openByDefault)
 end
 
 -- A line that opens or closes what is under it; returns whether it is open.
-local function Header(lines, text, color, key, openByDefault, indent, itemID)
+-- `trash` is an optional { kind, ... } for the bin on the right of the row.
+local function Header(lines, text, color, key, openByDefault, indent, itemID, trash)
     local open = IsOpen(key, openByDefault)
     Line(lines, "|T" .. (open and MINUS or PLUS) .. ":16|t " .. text, color, indent, itemID)
     lines[#lines].toggle = key
+    if trash and not search then lines[#lines].trash = trash end
     return open
 end
 
@@ -234,8 +238,9 @@ end
 local function PlaceLines(lines, source, indent)
     for _, zone in ipairs(SortedKeys(source.places or {})) do
         local subzones = source.places[zone]
+        local label = ns.PlaceLabel(zone)
         for _, sub in ipairs(SortedKeys(subzones)) do
-            Line(lines, (sub == "" and zone or zone .. ": " .. sub) .. Position(subzones[sub]), GRAY, indent)
+            Line(lines, (sub == "" and label or label .. ": " .. sub) .. Position(subzones[sub]), GRAY, indent)
         end
     end
 end
@@ -276,7 +281,8 @@ local function KindLines(lines, keys, indent, keyPrefix, openByDefault, beastLin
         end
     end
     for _, kind in ipairs(kinds) do
-        if Header(lines, kind .. Gray("(" .. #groups[kind] .. ")"), KIND_COLOR, keyPrefix .. kind, openByDefault, indent) then
+        local trash = { "sources", groups[kind] }
+        if Header(lines, kind .. Gray("(" .. #groups[kind] .. ")"), KIND_COLOR, keyPrefix .. kind, openByDefault, indent, nil, trash) then
             for _, key in ipairs(groups[kind]) do beastLine(key, indent + 1) end
         end
     end
@@ -320,7 +326,8 @@ local function PlaceView(lines, found)
             for _, key in ipairs(list) do keys[key] = true end
         end
         local count = #SortedKeys(keys)
-        if Header(lines, zone .. Gray("(" .. count .. ")"), GOLD, "zone:" .. zone, false) then
+        local trash = { "zone", zone }
+        if Header(lines, ns.PlaceLabel(zone) .. Gray("(" .. count .. ")"), GOLD, "zone:" .. zone, false, 0, nil, trash) then
             -- Beasts found where the zone has no subzone come first, right under it.
             for _, sub in ipairs(SortedKeys(subzones)) do
                 local indent = 1
@@ -339,12 +346,7 @@ local function PlaceView(lines, found)
         end
     end
     if #unplaced > 0 then
-        if Header(lines, L.BOOK_UNPLACED .. Gray("(" .. #unplaced .. ")"), GRAY, "unplaced", false) then
-            -- Clearing forgets all of them, not just those found.
-            if not search then
-                Line(lines, L.BOOK_FORGET, MISSING_COLOR, 1)
-                lines[#lines].action = "forget"
-            end
+        if Header(lines, L.BOOK_UNPLACED .. Gray("(" .. #unplaced .. ")"), GRAY, "unplaced", false, 0, nil, { "unplaced" }) then
             for _, key in ipairs(unplaced) do
                 BeastLine(lines, key, 1)
             end
@@ -364,50 +366,82 @@ local function BeastLines(lines)
     else
         PlaceView(lines, found)
     end
-    if #lines > 0 and not search then
-        Line(lines, " ", GRAY)
-        Line(lines, L.BOOK_FORGET_ALL, MISSING_COLOR)
-        lines[#lines].action = "forgetAll"
-    end
 end
 
 function ns.SetBeastView(view)
     ns.db.beastView = view
 end
 
--- Runs `fn` once the player says yes, where the game has its dialogs.
-local function Confirm(name, text, fn, arg)
-    local function Run()
-        fn()
-        ns.RefreshBook()
+-- Our own yes/no window. The game's StaticPopup is blocked for addons on some
+-- clients ("only available to the Blizzard UI").
+local confirm
+local function Confirm(_, text, fn, arg)
+    local message = text
+    if arg ~= nil then
+        local ok, formatted = pcall(string.format, text, arg)
+        if ok then message = formatted end
     end
-    if StaticPopupDialogs and StaticPopup_Show then
-        StaticPopupDialogs[name] = StaticPopupDialogs[name] or {
-            text = text,
-            button1 = YES,
-            button2 = NO,
-            OnAccept = Run,
-            timeout = 0,
-            whileDead = true,
-            hideOnEscape = true,
-        }
-        StaticPopup_Show(name, arg)
-    else
-        Run()
+    if not confirm then
+        confirm = CreateFrame("Frame", "EasyRecipeConfirm", UIParent, "BackdropTemplate")
+        confirm:SetSize(360, 140)
+        confirm:SetPoint("CENTER")
+        confirm:SetFrameStrata("DIALOG")
+        confirm:SetClampedToScreen(true)
+        confirm:EnableMouse(true)
+        confirm:SetBackdrop({
+            bgFile = [[Interface\DialogFrame\UI-DialogBox-Background-Dark]],
+            edgeFile = [[Interface\DialogFrame\UI-DialogBox-Border]],
+            tile = true,
+            tileSize = 32,
+            edgeSize = 32,
+            insets = { left = 11, right = 12, top = 12, bottom = 11 },
+        })
+        confirm.text = confirm:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        confirm.text:SetPoint("TOPLEFT", 20, -24)
+        confirm.text:SetPoint("TOPRIGHT", -20, -24)
+        confirm.text:SetJustifyH("CENTER")
+        confirm.text:SetWordWrap(true)
+        local yes = CreateFrame("Button", nil, confirm, "UIPanelButtonTemplate")
+        yes:SetSize(110, 24)
+        yes:SetPoint("BOTTOMRIGHT", confirm, "BOTTOM", -8, 18)
+        yes:SetText(L.BOOK_YES)
+        yes:SetScript("OnClick", function()
+            confirm:Hide()
+            if confirm.fn then confirm.fn() end
+            ns.RefreshBook()
+        end)
+        local no = CreateFrame("Button", nil, confirm, "UIPanelButtonTemplate")
+        no:SetSize(110, 24)
+        no:SetPoint("BOTTOMLEFT", confirm, "BOTTOM", 8, 18)
+        no:SetText(L.BOOK_NO)
+        no:SetScript("OnClick", function() confirm:Hide() end)
     end
+    confirm.fn = fn
+    confirm.text:SetText(message)
+    confirm:Show()
+end
+
+local function ForgetUnplacedAction()
+    Confirm("EASYRECIPE_FORGET", L.BOOK_FORGET_CONFIRM, ns.ForgetUnplaced, ns.UnplacedCount())
 end
 
 local ACTIONS = {
-    forget = function()
-        Confirm("EASYRECIPE_FORGET", L.BOOK_FORGET_CONFIRM, ns.ForgetUnplaced, ns.UnplacedCount())
-    end,
+    forget = ForgetUnplacedAction,
+    unplaced = ForgetUnplacedAction,
     forgetAll = function()
         Confirm("EASYRECIPE_FORGET_ALL", L.BOOK_FORGET_ALL_CONFIRM, ns.ResetLoot)
     end,
+    sources = function(keys)
+        Confirm("EASYRECIPE_FORGET_KEYS", L.BOOK_FORGET_KEYS_CONFIRM, function() ns.ForgetSources(keys) end, #keys)
+    end,
+    zone = function(zone)
+        Confirm("EASYRECIPE_FORGET_ZONE", L.BOOK_FORGET_ZONE_CONFIRM, function() ns.ForgetZone(zone) end, ns.PlaceLabel(zone))
+    end,
 }
 
-function ns.BookAction(name)
-    ACTIONS[name]()
+function ns.BookAction(name, arg)
+    local action = ACTIONS[name]
+    if action then action(arg) end
 end
 
 local EMPTY = { craftable = "BOOK_EMPTY_CRAFTABLE", almost = "BOOK_EMPTY_ALMOST", all = "BOOK_EMPTY_ALL",
@@ -446,12 +480,27 @@ local function Row(i)
         row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         row.label:SetJustifyH("LEFT")
         row.label:SetWordWrap(false)
+        -- A plain red X. No Blizzard cursor textures: those are forbidden on some clients.
+        row.trashBtn = CreateFrame("Button", nil, row)
+        row.trashBtn:SetSize(18, 18)
+        row.trashBtn:SetPoint("RIGHT", -2, 0)
+        row.trashBtn.label = row.trashBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        row.trashBtn.label:SetPoint("CENTER", 0, 1)
+        row.trashBtn.label:SetText("|cffff3030×|r")
+        row.trashBtn:SetScript("OnEnter", function(self)
+            self.label:SetText("|cffffffff×|r")
+        end)
+        row.trashBtn:SetScript("OnLeave", function(self)
+            self.label:SetText("|cffff3030×|r")
+        end)
+        row.trashBtn:SetScript("OnClick", function(self)
+            local trash = self:GetParent().trash
+            if trash then ns.BookAction(trash[1], trash[2]) end
+        end)
         row:SetScript("OnEnter", ShowItemTooltip)
         row:SetScript("OnLeave", function() GameTooltip:Hide() end)
         row:SetScript("OnClick", function(self)
-            if self.action then
-                ns.BookAction(self.action)
-            elseif self.toggle then
+            if self.toggle then
                 ns.ToggleBookEntry(self.toggle)
                 Refresh()
             end
@@ -509,12 +558,13 @@ function Refresh()
         local row = Row(i)
         row.label:ClearAllPoints()
         row.label:SetPoint("LEFT", line.indent * INDENT, 0)
-        row.label:SetPoint("RIGHT")
+        row.label:SetPoint("RIGHT", row.trashBtn, "LEFT", -4, 0)
         row.label:SetText(line.text)
         row.label:SetTextColor(line.color[1], line.color[2], line.color[3])
         row.itemID = line.itemID
         row.toggle = line.toggle
-        row.action = line.action
+        row.trash = line.trash
+        if line.trash then row.trashBtn:Show() else row.trashBtn:Hide() end
         row:Show()
     end
     for i = #lines + 1, #rows do
@@ -527,8 +577,13 @@ function Refresh()
     if tab == "beasts" then
         window.view:SetText(ns.db.beastView == "kind" and L.BOOK_BY_PLACE or L.BOOK_BY_KIND)
         window.view:Show()
+        local hasLoot = next(ns.db.loot and ns.db.loot.sources or {}) ~= nil
+        if hasLoot and not search then window.clearAll:Show() else window.clearAll:Hide() end
+        window.scroll:SetPoint("BOTTOMRIGHT", -36, hasLoot and not search and 48 or 18)
     else
         window.view:Hide()
+        window.clearAll:Hide()
+        window.scroll:SetPoint("BOTTOMRIGHT", -36, 18)
     end
 end
 
@@ -589,17 +644,25 @@ local function Build()
         frame.tabs[i] = button
     end
 
-    -- The game's search box, with its clear button and hint; a plain input box
-    -- where the client has none.
-    local ok, box = pcall(CreateFrame, "EditBox", nil, frame, "SearchBoxTemplate")
-    if not ok then box = CreateFrame("EditBox", nil, frame, "InputBoxTemplate") end
+    -- A plain input box: SearchBoxTemplate is Blizzard UI on some clients and
+    -- can throw "only available to the Blizzard UI".
+    local box = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
     box:SetSize(WIDTH - 170, 20)
     box:SetPoint("TOPLEFT", 26, -74)
     box:SetAutoFocus(false)
-    if type(box.Instructions) == "table" then box.Instructions:SetText(L.BOOK_SEARCH) end
+    box:SetTextInsets(8, 8, 0, 0)
+    local hint = box:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    hint:SetPoint("LEFT", 10, 0)
+    hint:SetText(L.BOOK_SEARCH)
     box:HookScript("OnTextChanged", function(self)
-        ns.SetBookSearch(self:GetText())
+        local text = self:GetText() or ""
+        if hint then if text == "" then hint:Show() else hint:Hide() end end
+        ns.SetBookSearch(text)
         Refresh()
+    end)
+    box:SetScript("OnEditFocusGained", function() if hint then hint:Hide() end end)
+    box:SetScript("OnEditFocusLost", function(self)
+        if hint and (self:GetText() or "") == "" then hint:Show() end
     end)
     box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
 
@@ -611,6 +674,14 @@ local function Build()
         Refresh()
     end)
     frame.view = view
+
+    local clearAll = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    clearAll:SetSize(WIDTH - 60, 24)
+    clearAll:SetPoint("BOTTOM", 0, 16)
+    clearAll:SetText(L.BOOK_FORGET_ALL)
+    clearAll:SetScript("OnClick", function() ns.BookAction("forgetAll") end)
+    clearAll:Hide()
+    frame.clearAll = clearAll
 
     local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 20, LIST_TOP)

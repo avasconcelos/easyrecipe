@@ -148,6 +148,13 @@ local function InstallGame()
     IsFishingLoot = function() return game.loot.fishing end
     GetRealZoneText = function() return game.zone end
     GetSubZoneText = function() return game.subzone or "" end
+    IsInInstance = function()
+        if game.instance then return true, game.instance end
+        return false
+    end
+    GetInstanceInfo = function()
+        return game.zone, game.instance
+    end
     C_Map = {
         GetBestMapForUnit = function() return game.position and 52 end,
         GetMapInfo = function() return { name = game.mapName } end,
@@ -160,6 +167,9 @@ local function InstallGame()
     UnitName = function(unit) return game.units[unit] and game.units[unit].name end
     UnitCreatureType = function(unit) return game.units[unit] and game.units[unit].ctype end
     UnitCreatureFamily = function(unit) return game.units[unit] and game.units[unit].family end
+    CombatLogGetCurrentEventInfo = function()
+        return unpack(game.combatLog or {})
+    end
     -- A frame, button or font string. Layout calls are accepted and ignored.
     local function NewWidget(name)
         local widget = { name = name, events = {}, scripts = {}, shown = true }
@@ -201,9 +211,12 @@ local function InstallGame()
     }
     GetTime = function() return game.time end
     hooksecurefunc = function(tbl, name, hook)
+        if type(tbl) == "string" then
+            hook, name, tbl = name, tbl, _G
+        end
         local original = tbl[name]
         tbl[name] = function(...)
-            original(...)
+            if original then original(...) end
             hook(...)
         end
     end
@@ -348,6 +361,10 @@ local function Click(label)
         if frame.text == label and frame.scripts.OnClick then return frame.scripts.OnClick(frame) end
     end
     error("no button labeled " .. label)
+end
+
+local function ConfirmYes()
+    Click("Yes")
 end
 
 -- The value of an option, set the way the options panel sets it.
@@ -918,7 +935,7 @@ ns.SetBeastView("place")
 check(not BookLine("beasts", "Small Barnacled Clam (from"), "opened items are not beasts of their own")
 ns.SetBookSearch("  CLAM meat ")
 check(BookLine("beasts", "Sand Crab") and BookLine("beasts", "Clam Meat"), "search finds a beast by what opens out of its drops, shown open")
-check(not BookLine("beasts", "Old Bear") and not BookLine("beasts", "Clear these creatures"), "and leaves the rest out")
+check(not BookLine("beasts", "Old Bear"), "and leaves the rest out")
 ns.SetBookSearch("axe")
 check(BookLine("all", "Copper Axe") and not BookLine("all", "Rough Sharpening Stone"), "search finds a recipe by its name")
 ns.SetBookSearch("#2880")
@@ -927,13 +944,31 @@ ns.SetBookSearch("nothing like this")
 equal(ns.BookLines("all")[1].text, "Nothing found.", "and says when nothing is found")
 ns.SetBookSearch("")
 local unplaced = BookLine("beasts", "Unidentified")
-check(unplaced and unplaced.text:find("(1)", 1, true), "beasts with no known place are apart")
+check(unplaced and unplaced.text:find("(1)", 1, true) and unplaced.trash and unplaced.trash[1] == "unplaced",
+    "beasts with no known place are apart, with a bin")
 ns.ToggleBookEntry(unplaced.toggle)
-local forget = BookLine("beasts", "Clear these creatures")
-check(forget and forget.action == "forget" and BookLine("beasts", "Old Bear"), "with a way to clear them")
-ns.BookAction(forget.action)
+check(BookLine("beasts", "Old Bear"), "open, they are listed")
+ns.BookAction(unplaced.trash[1])
+ConfirmYes()
 check(not BookLine("beasts", "Unidentified") and not ns.LootSource("npc:999"), "cleared, they are gone")
 check(ns.LootSource("npc:" .. CRAB), "and the others stay")
+
+game.zone, game.instance = "Shadowfang Keep", "party"
+Fire("ZONE_CHANGED_NEW_AREA")
+equal(ns.PlaceLabel("Shadowfang Keep"), "Shadowfang Keep (Dungeon)", "entering a dungeon tags its name")
+game.units.target = { guid = CorpseGUID(3851, 1), name = "Shadowfang Warden B", ctype = "Humanoid" }
+Loot({ From({ item = 2589, name = "Linen Cloth", icon = 1, quality = 1 }, CorpseGUID(3851, 2), 1) })
+check(not ns.LootSource("npc:3851"), "dungeon loot is ignored")
+check(not BookLine("beasts", "Shadowfang Keep"), "and does not enter the book")
+ns.SetBeastView("kind")
+EasyRecipeDB.loot.sources["npc:777"] = { kind = "npc", looted = 1, items = {}, places = { Nowhere = { [""] = {} } } }
+local noType = BookLine("beasts", "Unknown type")
+check(noType and noType.trash and noType.trash[1] == "sources", "an unknown-type group has a bin")
+ns.BookAction(noType.trash[1], noType.trash[2])
+ConfirmYes()
+check(not BookLine("beasts", "Unknown type"), "the bin forgets that whole group")
+ns.SetBeastView("place")
+game.zone, game.instance, game.units.target = "Westfall", nil, nil
 
 -- A game that hides the GUIDs of units: the unit the tooltip shows gives the type.
 EasyRecipeDB.loot.sources["npc:998"] = { kind = "npc", name = "Grey Bear", looted = 1, items = {} }
@@ -950,20 +985,33 @@ HoverUnit(CorpseGUID(997, 1), "Vengeful")
 equal(ns.LootSource("npc:997").ctype, "Humanoid", "the selected unit gives the type when mouseover does not")
 game.units.mouseover, game.units.target = nil, nil
 
-local forgetAll = BookLine("beasts", "Clear everything learned from loot")
-check(forgetAll and forgetAll.action == "forgetAll", "the Beasts tab can clear everything")
-ns.SetBookSearch("crab")
-check(not BookLine("beasts", "Clear everything learned from loot"), "but not while searching")
-ns.SetBookSearch("")
+-- Selecting a creature names it for the loot that follows without a target.
+local WARDEN = 3851
+game.units.target = { guid = CorpseGUID(WARDEN, 9), name = "Shadowfang Warden", ctype = "Humanoid" }
+Fire("PLAYER_TARGET_CHANGED")
+game.units.target = nil
+Loot({ From({ item = 2589, name = "Linen Cloth", icon = 132890, quality = 1 }, CorpseGUID(WARDEN, 9), 1) })
+equal(ns.LootSource("npc:" .. WARDEN).name, "Shadowfang Warden", "selecting names the creature for loot without a target")
+EasyRecipeDB.loot.sources["npc:3853"] = { kind = "npc", looted = 2, items = {} }
+game.units.target = { guid = CorpseGUID(3853, 1), name = "Shadowfang Glutton", ctype = "Humanoid" }
+Fire("PLAYER_TARGET_CHANGED")
+equal(ns.LootSource("npc:3853").name, "Shadowfang Glutton", "selecting a recorded creature names it")
+equal(ns.LootSource("npc:3853").ctype, "Humanoid", "and types it")
+game.units.target = nil
+
 local savedLoot = {}
 for key, source in pairs(EasyRecipeDB.loot.sources) do savedLoot[key] = source end
 local savedItems = {}
 for id, info in pairs(EasyRecipeDB.loot.items) do savedItems[id] = info end
-ns.BookAction(forgetAll.action)
+local savedInstances = {}
+for zone in pairs(EasyRecipeDB.loot.instances or {}) do savedInstances[zone] = true end
+ns.BookAction("forgetAll")
+ConfirmYes()
 check(next(EasyRecipeDB.loot.sources) == nil, "cleared, nothing is left")
 equal(ns.BookLines("beasts")[1].text, "No creatures yet: they are listed as you loot them.", "and the tab says so")
 for key, source in pairs(savedLoot) do EasyRecipeDB.loot.sources[key] = source end
 for id, info in pairs(savedItems) do EasyRecipeDB.loot.items[id] = info end
+EasyRecipeDB.loot.instances = savedInstances
 ns.RebuildLootIndex()
 
 -- A game that does not count the bank while it is closed: what it held when open stands in.
@@ -995,10 +1043,12 @@ equal(thick.looted, 1, "nor loot opened long after")
 SlashCmdList.EASYRECIPE("book")
 book = Window("EasyRecipeBook")
 check(book and book.shown, "/easyrecipe book opens it")
-Click("Beasts")
+Click("Bestiary")
 Fire("BAG_UPDATE_DELAYED")
 RunTimers()
 check(not Printed("could not be set up"), "the window draws without errors")
+check(book.clearAll and book.clearAll.shown and book.clearAll.text == "Clear everything learned from loot",
+    "the Bestiary tab has a clear-all button")
 Click("All")
 local filter
 for _, frame in ipairs(game.frames) do
@@ -1012,8 +1062,8 @@ check(EasyRecipeCharDB.hiddenProfs.Blacksmithing and not BookLine("all", "Copper
 filter.GetChecked = function() return true end
 filter.scripts.OnClick(filter)
 check(BookLine("all", "Copper Axe"), "checked again, it is back")
-Click("Beasts")
-check(not filter.shown, "the Beasts tab has none")
+Click("Bestiary")
+check(not filter.shown, "the Bestiary tab has none")
 
 -- Loot is account-wide and survives a reload.
 ResetGame()
