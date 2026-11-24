@@ -55,7 +55,7 @@ local function AddRecipeLines(tooltip, itemID, db)
                     if profession then tooltip:AddLine(profession, 1, 0.82, 0) end
                 end
                 local color = DIFFICULTY_COLOR[recipe.diff] or NO_DIFFICULTY_COLOR
-                local left = recipe.name
+                local left = ns.RecipeName and ns.RecipeName(list[i]) or recipe.name
                 if recipe.icon then left = "|T" .. recipe.icon .. ":0|t " .. left end
                 tooltip:AddDoubleLine(left, recipe.reagents[itemID] .. "x", color[1], color[2], color[3], 0.8, 0.8, 0.8)
             end

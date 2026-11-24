@@ -266,6 +266,7 @@ local function RecipeLines(lines, mode)
         if ns.IsListed(recipe) and RecipeFound(recipe) then
             local count, any = Craftable(recipe)
             if mode == "all" or (mode == "craftable" and count > 0) or (mode == "almost" and count == 0 and any) then
+                if ns.RecipeName then ns.RecipeName(recipeID) end
                 local profession = recipe.prof or L.BOOK_OTHER
                 byProfession[profession] = byProfession[profession] or {}
                 table.insert(byProfession[profession], recipeID)
@@ -279,7 +280,7 @@ local function RecipeLines(lines, mode)
         table.sort(list, CompareRecipes)
         for _, recipeID in ipairs(open and list or {}) do
             local recipe = ns.recipes[recipeID]
-            local text = WithIcon(recipe.name, recipe.icon)
+            local text = WithIcon(ns.RecipeName and ns.RecipeName(recipeID) or recipe.name, recipe.icon)
             if times[recipeID] > 0 then text = text .. "  x" .. times[recipeID] end
             if mode == "craftable" or mode == "almost" or mode == "all" then
                 text = (cart[recipeID] and "|cff33ff99[+]|r " or "|cff666666[ ]|r ") .. text
@@ -776,7 +777,7 @@ local function RefreshShop()
         for _, recipeID in ipairs(list) do
             local recipe = ns.recipes[recipeID]
             lines[#lines + 1] = {
-                text = WithIcon(recipe.name, recipe.icon),
+                text = WithIcon(ns.RecipeName and ns.RecipeName(recipeID) or recipe.name, recipe.icon),
                 color = GOLD,
                 recipeID = recipeID,
                 qty = cart[recipeID],

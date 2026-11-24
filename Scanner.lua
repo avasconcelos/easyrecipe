@@ -69,11 +69,62 @@ function ns.ResolveLevels()
 end
 
 function ns.OnItemInfo(itemID, success)
+    if success and ns.ApplyItemName then ns.ApplyItemName(itemID) end
+    if success and ns.RefreshRecipeLocale then ns.RefreshRecipeLocale(itemID) end
     if not waiting[itemID] then return end
     waiting[itemID] = nil
     if not success then return end
     for _, entry in pairs(ns.recipes) do
         if entry.out == itemID then ResolveLevel(entry) end
+    end
+end
+
+-- Prefer live recipe / profession names for the current client locale. Falls
+-- back to the crafted item's name (by ID), then to whatever was saved.
+function ns.RefreshRecipeLocale(itemID)
+    if not ns.recipes then return end
+    for recipeID, entry in pairs(ns.recipes) do
+        if not itemID or entry.out == itemID then
+            ns.RecipeName(recipeID)
+        end
+    end
+end
+
+function ns.RecipeName(recipeID)
+    local entry = ns.recipes and ns.recipes[recipeID]
+    if not entry then return "#" .. tostring(recipeID) end
+    local liveName
+    if C and C.GetRecipeInfo then
+        local ok, info = pcall(C.GetRecipeInfo, recipeID)
+        if ok and type(info) == "table" then
+            if type(info.name) == "string" and info.name ~= "" then liveName = info.name end
+            if info.icon then entry.icon = info.icon end
+        end
+    end
+    if C and C.GetProfessionInfoByRecipeID then
+        local ok, info = pcall(C.GetProfessionInfoByRecipeID, recipeID)
+        if ok and type(info) == "table" then
+            local prof = info.parentProfessionName or info.professionName
+            if type(prof) == "string" and prof ~= "" then entry.prof = prof end
+        end
+    end
+    if not liveName and entry.out then
+        local itemName = GetItemInfo and GetItemInfo(entry.out)
+        if type(itemName) == "string" and itemName ~= "" then
+            liveName = itemName
+        elseif ns.ItemDisplay then
+            -- Trigger a cache request; ApplyItemName / RefreshRecipeLocale finish it.
+            ns.ItemDisplay(entry.out)
+        end
+    end
+    if liveName then entry.name = liveName end
+    return entry.name
+end
+
+function ns.WarmRecipeNames()
+    if not ns.recipes then return end
+    for recipeID in pairs(ns.recipes) do
+        ns.RecipeName(recipeID)
     end
 end
 

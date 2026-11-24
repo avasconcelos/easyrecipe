@@ -492,15 +492,70 @@ function ns.QualityColor(quality)
     return 1, 1, 1
 end
 
--- Name, icon and quality of an item: as the loot window showed it, else from
--- the game, which may not have it yet.
+-- Ask the client for this item's data in the current locale (does not need a
+-- re-loot: the ID is enough). Safe to call often; the game dedupes requests.
+local function RequestItem(itemID)
+    if C_Item and C_Item.RequestLoadItemDataByID then
+        C_Item.RequestLoadItemDataByID(itemID)
+    elseif GetItemInfo then
+        GetItemInfo(itemID)
+    end
+end
+
+local tooltipRefreshQueued = false
+local function QueueTooltipRefresh()
+    if tooltipRefreshQueued or not C_Timer then return end
+    tooltipRefreshQueued = true
+    C_Timer.After(0.05, function()
+        tooltipRefreshQueued = false
+        if GameTooltip and GameTooltip:IsShown() and GameTooltip.GetUnit then
+            local _, unit = GameTooltip:GetUnit()
+            if unit then GameTooltip:SetUnit(unit) end
+        end
+        if ns.RefreshBook then ns.RefreshBook() end
+    end)
+end
+
+-- Write the live locale name into the saved record when the client has it.
+function ns.ApplyItemName(itemID)
+    if not (loot and loot.items and loot.items[itemID] and GetItemInfo) then return end
+    local itemName = GetItemInfo(itemID)
+    if type(itemName) ~= "string" or itemName == "" then return end
+    if loot.items[itemID].name ~= itemName then
+        loot.items[itemID].name = itemName
+        QueueTooltipRefresh()
+    end
+end
+
+-- At login, pull current-locale names for every known loot item ID.
+function ns.WarmItemNames()
+    if not (loot and loot.items) then return end
+    for itemID in pairs(loot.items) do
+        if GetItemInfo and GetItemInfo(itemID) then
+            ns.ApplyItemName(itemID)
+        else
+            RequestItem(itemID)
+        end
+    end
+end
+
+-- Name, icon and quality of an item. Prefers the live client name for the
+-- current locale; requests it by ID when the cache is cold; falls back to the
+-- saved name only until that arrives. Icon/quality stay as last seen in loot.
 function ns.ItemDisplay(itemID)
     local info = loot and loot.items[itemID]
-    local name, icon, quality = info and info.name, info and info.icon, info and info.quality
-    if not name and GetItemInfo then
+    local name, icon, quality = nil, info and info.icon, info and info.quality
+    if GetItemInfo then
         local itemName, _, itemQuality = GetItemInfo(itemID)
-        if type(itemName) == "string" then name, quality = itemName, quality or itemQuality end
+        if type(itemName) == "string" and itemName ~= "" then
+            name = itemName
+            quality = quality or itemQuality
+            if info then info.name = itemName end
+        else
+            RequestItem(itemID)
+        end
     end
+    if not name and info then name = info.name end
     if not icon and C_Item and C_Item.GetItemInfoInstant then
         icon = select(5, C_Item.GetItemInfoInstant(itemID))
     end
@@ -511,8 +566,37 @@ function ns.LootSource(key)
     return loot and loot.sources[key]
 end
 
+-- Live creature name for the current client locale, by NPC ID. Falls back to
+-- nil when the game has not cached that creature yet.
+local npcTip
+local function NpcNameByID(npcID)
+    npcID = tonumber(npcID)
+    if not npcID or npcID <= 0 then return end
+    local link = ("unit:Creature-0-0-0-0-%d-0"):format(npcID)
+    if C_TooltipInfo and C_TooltipInfo.GetHyperlink then
+        local ok, data = pcall(C_TooltipInfo.GetHyperlink, link)
+        if ok and type(data) == "table" and type(data.lines) == "table" then
+            for _, line in ipairs(data.lines) do
+                local text = line.leftText or line.text
+                if type(text) == "string" and text ~= "" then return text end
+            end
+        end
+    end
+    if not npcTip then
+        npcTip = CreateFrame("GameTooltip", "EasyRecipeNpcTip", UIParent, "GameTooltipTemplate")
+        npcTip:SetOwner(UIParent, "ANCHOR_NONE")
+    end
+    npcTip:ClearLines()
+    pcall(npcTip.SetHyperlink, npcTip, link)
+    local left = _G["EasyRecipeNpcTipTextLeft1"]
+    local text = left and left.GetText and left:GetText()
+    if type(text) == "string" and text ~= "" then return text end
+end
+
 -- How a source is named in a list. An opened item names, after it, the
 -- creature it most often came from, so a clam leads back to its crab.
+-- Creature names prefer the live client locale (by NPC ID) so switching
+-- language does not leave Portuguese names on an English client.
 function ns.SourceName(key, source, depth)
     if source.kind == "fish" then return L.FISHING:format(source.name) end
     if source.kind == "item" then
@@ -527,7 +611,13 @@ function ns.SourceName(key, source, depth)
         end
         return name
     end
-    return source.name or L.UNKNOWN_CREATURE:format(tonumber(key:match("%d+$")) or 0)
+    local npcID = tonumber(key:match("%d+$"))
+    local live = NpcNameByID(npcID)
+    if live then
+        source.name = live
+        return live
+    end
+    return source.name or L.UNKNOWN_CREATURE:format(npcID or 0)
 end
 
 -- The items of a source, most dropped first. With the reagent filter on, only

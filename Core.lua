@@ -165,6 +165,8 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2)
             Print(L.HINT)
         end
         ns.ResolveLevels()
+        if ns.WarmItemNames then ns.WarmItemNames() end
+        if ns.WarmRecipeNames then ns.WarmRecipeNames() end
         ns.Try(ns.SetupOptions)
         ns.Try(ns.SetupMinimap)
         if not ns.db.introShown then ns.Try(ns.ShowIntro) end
