@@ -22,8 +22,9 @@ local window, content
 local rows = {}
 local tab = "craftable"
 -- Headers clicked open or closed this session: beasts start closed, as there
--- may be hundreds, and professions open.
-local toggled = {}
+-- may be hundreds, and professions open. expandOverride forces every header
+-- open (true) or closed (false) until the player toggles one by hand.
+local toggled, headerDefault, expandOverride = {}, {}, nil
 -- What the search box holds, lowercased, or nil.
 local search
 -- Shopping list for recipe tabs: recipeID -> how many to make.
@@ -50,12 +51,17 @@ local function Count(itemID, includeBank)
     return count
 end
 
--- How many of an item the character has, bank included. With the bank closed
--- the game may not count it, so what the bank held when last open stands in.
-local function Have(itemID)
+-- Bags and bank apart. With the bank closed the game may not count it, so what
+-- the bank held when last open stands in.
+local function BagsAndBank(itemID)
     local bags = Count(itemID, false)
     local bank = Count(itemID, true) - bags
     if bank <= 0 then bank = ns.char.bank[itemID] or 0 end
+    return bags, bank
+end
+
+local function Have(itemID)
+    local bags, bank = BagsAndBank(itemID)
     return bags + bank
 end
 
@@ -129,9 +135,11 @@ local function Line(lines, text, color, indent, itemID)
 end
 
 local function IsOpen(key, openByDefault)
+    headerDefault[key] = openByDefault
     -- While searching everything found is shown.
     if search then return true end
-    if toggled[key] then return not openByDefault end
+    if toggled[key] ~= nil then return toggled[key] end
+    if expandOverride ~= nil then return expandOverride end
     return openByDefault
 end
 
@@ -146,7 +154,13 @@ local function Header(lines, text, color, key, openByDefault, indent, itemID, tr
 end
 
 function ns.ToggleBookEntry(key)
-    toggled[key] = not toggled[key] or nil
+    local open = IsOpen(key, headerDefault[key] ~= nil and headerDefault[key] or true)
+    toggled[key] = not open
+end
+
+function ns.SetBookExpanded(open)
+    wipe(toggled)
+    expandOverride = open and true or false
 end
 
 local function SortedKeys(map)
@@ -223,8 +237,12 @@ function ns.ShopTotals()
     end
     local list = {}
     for itemID, total in pairs(need) do
-        local have = Have(itemID)
-        list[#list + 1] = { itemID = itemID, need = total, have = have, buy = math.max(0, total - have) }
+        local bags, bank = BagsAndBank(itemID)
+        local have = bags + bank
+        list[#list + 1] = {
+            itemID = itemID, need = total, have = have, bags = bags, bank = bank,
+            buy = math.max(0, total - have),
+        }
     end
     table.sort(list, function(a, b)
         if a.buy ~= b.buy then return a.buy > b.buy end
@@ -602,6 +620,7 @@ local function ShopRow(i)
         row:SetHeight(SHOP_ROW)
         row:SetPoint("TOPLEFT", 0, -(i - 1) * SHOP_ROW)
         row:SetPoint("TOPRIGHT", 0, -(i - 1) * SHOP_ROW)
+        row:EnableMouse(true)
         row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         row.label:SetPoint("LEFT", 2, 0)
         row.label:SetJustifyH("LEFT")
@@ -630,6 +649,14 @@ local function ShopRow(i)
             local id = self:GetParent().recipeID
             if id then ns.ShopSet(id, (cart[id] or 0) + 1); Refresh() end
         end)
+        row:SetScript("OnEnter", function(self)
+            if self.bags == nil then return end
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            if self.itemID then GameTooltip:SetItemByID(self.itemID) end
+            GameTooltip:AddLine(L.BOOK_SHOP_HAVE_TIP:format(self.bags, self.bank), 1, 0.82, 0)
+            GameTooltip:Show()
+        end)
+        row:SetScript("OnLeave", function() GameTooltip:Hide() end)
         shopRows[i] = row
     end
     return row
@@ -699,8 +726,10 @@ local function RefreshShop()
     local bookTab, shopTab = window.bookFold, window.shopFold
 
     if not (sessionOpen and ShoppingTab()) then
-        local restoreBook = foldBook and window and not window:IsShown()
-        foldBook, foldShop = false, false
+        -- Leaving the shopping tabs clears the fold layout; closing the window
+        -- keeps foldBook/foldShop so the next open restores them.
+        local restoreBook = sessionOpen and foldBook and window and not window:IsShown()
+        if sessionOpen then foldBook, foldShop = false, false end
         shop:Hide()
         if bookTab then bookTab:Hide() end
         if shopTab then shopTab:Hide() end
@@ -759,9 +788,12 @@ local function RefreshShop()
             local name, icon = ns.ItemDisplay(entry.itemID)
             local color = entry.buy > 0 and MISSING_COLOR or HAVE_COLOR
             lines[#lines + 1] = {
-                text = ("%s  %d  |cff999999(%s)|r"):format(WithIcon(name, icon), entry.buy, L.BOOK_SHOP_HAVE:format(entry.have)),
+                text = ("%s  %d  |cff999999(%s)|r"):format(
+                    WithIcon(name, icon), entry.buy, L.BOOK_SHOP_HAVE:format(entry.bags, entry.bank)),
                 color = color,
                 itemID = entry.itemID,
+                bags = entry.bags,
+                bank = entry.bank,
             }
         end
     end
@@ -772,6 +804,8 @@ local function RefreshShop()
         row.label:SetText(line.text)
         row.label:SetTextColor(line.color[1], line.color[2], line.color[3])
         row.recipeID = line.recipeID
+        row.itemID = line.itemID
+        row.bags, row.bank = line.bags, line.bank
         if line.qty then
             row.qty:SetText(tostring(line.qty))
             row.qty:Show()
@@ -792,44 +826,163 @@ local function RefreshShop()
     window.shopContent:SetHeight(math.max(1, #lines * SHOP_ROW))
 end
 
--- One checkbox per profession, the same filter as the options panel's, in
--- rows under the search box on the recipe tabs.
-local FILTER_WIDTH, FILTER_HEIGHT, FILTER_COLUMNS, LIST_TOP = 110, 22, 4, -100
+-- Search at -74; profession icons under it; expand/collapse under the icons.
+local SEARCH_Y, FILTER_Y, FILTER_SLOT, ACTION_H = -74, -100, 48, 24
 local filters = {}
 
-local function Filter(name)
+-- Secondary skills always last: First Aid, Fishing, Cooking (locale names).
+local SECONDARY_RANK = {
+    ["First Aid"] = 1, ["Primeiros Socorros"] = 1,
+    ["Fishing"] = 2, ["Pesca"] = 2,
+    ["Cooking"] = 3, ["Culinária"] = 3,
+}
+local PROF_ICONS = {
+    Alchemy = [[Interface\Icons\Trade_Alchemy]],
+    Alquimia = [[Interface\Icons\Trade_Alchemy]],
+    Blacksmithing = [[Interface\Icons\Trade_BlackSmithing]],
+    Ferraria = [[Interface\Icons\Trade_BlackSmithing]],
+    Enchanting = [[Interface\Icons\Trade_Engraving]],
+    Encantamento = [[Interface\Icons\Trade_Engraving]],
+    Engineering = [[Interface\Icons\Trade_Engineering]],
+    Engenharia = [[Interface\Icons\Trade_Engineering]],
+    Herbalism = [[Interface\Icons\Trade_Herbalism]],
+    Herborismo = [[Interface\Icons\Trade_Herbalism]],
+    Leatherworking = [[Interface\Icons\Trade_LeatherWorking]],
+    Couraria = [[Interface\Icons\Trade_LeatherWorking]],
+    Mining = [[Interface\Icons\Trade_Mining]],
+    ["Mineração"] = [[Interface\Icons\Trade_Mining]],
+    Skinning = [[Interface\Icons\INV_Misc_Pelt_Wolf_01]],
+    Esfolamento = [[Interface\Icons\INV_Misc_Pelt_Wolf_01]],
+    Tailoring = [[Interface\Icons\Trade_Tailoring]],
+    Alfaiataria = [[Interface\Icons\Trade_Tailoring]],
+    Jewelcrafting = [[Interface\Icons\INV_Misc_Gem_01]],
+    Joalheria = [[Interface\Icons\INV_Misc_Gem_01]],
+    Inscription = [[Interface\Icons\INV_Inscription_Tradeskill01]],
+    Escrivania = [[Interface\Icons\INV_Inscription_Tradeskill01]],
+    Cooking = [[Interface\Icons\INV_Misc_Food_15]],
+    ["Culinária"] = [[Interface\Icons\INV_Misc_Food_15]],
+    Fishing = [[Interface\Icons\Trade_Fishing]],
+    Pesca = [[Interface\Icons\Trade_Fishing]],
+    ["First Aid"] = [[Interface\Icons\Spell_Holy_SealOfSacrifice]],
+    ["Primeiros Socorros"] = [[Interface\Icons\Spell_Holy_SealOfSacrifice]],
+}
+
+local function LiveProfessionIcons()
+    local byName = {}
+    if not (GetProfessions and GetProfessionInfo) then return byName end
+    local ok, a, b, c, d, e, f = pcall(GetProfessions)
+    if not ok then return byName end
+    for _, index in ipairs({ a, b, c, d, e, f }) do
+        if index then
+            local name, icon = GetProfessionInfo(index)
+            if type(name) == "string" and name ~= "" then
+                byName[name] = icon or PROF_ICONS[name]
+            end
+        end
+    end
+    return byName
+end
+
+-- Primary slots first (character's 1st / 2nd), then First Aid, Fishing, Cooking.
+local function OrderedProfessions()
+    local have, primary, secondary = {}, {}, {}
+    for _, name in ipairs(ns.Professions()) do
+        have[name] = true
+        if SECONDARY_RANK[name] then
+            secondary[#secondary + 1] = name
+        else
+            primary[#primary + 1] = name
+        end
+    end
+    local rank, icons = {}, LiveProfessionIcons()
+    if GetProfessions and GetProfessionInfo then
+        local ok, p1, p2 = pcall(GetProfessions)
+        if ok then
+            if p1 then
+                local name = GetProfessionInfo(p1)
+                if name then rank[name] = 1 end
+            end
+            if p2 then
+                local name = GetProfessionInfo(p2)
+                if name then rank[name] = 2 end
+            end
+        end
+    end
+    table.sort(primary, function(a, b)
+        local ra, rb = rank[a] or 50, rank[b] or 50
+        if ra ~= rb then return ra < rb end
+        return a < b
+    end)
+    table.sort(secondary, function(a, b)
+        return (SECONDARY_RANK[a] or 99) < (SECONDARY_RANK[b] or 99)
+    end)
+    local list = {}
+    local function push(name)
+        if not (name and have[name]) then return end
+        have[name] = nil
+        list[#list + 1] = {
+            name = name,
+            icon = icons[name] or PROF_ICONS[name] or [[Interface\Icons\INV_Misc_QuestionMark]],
+        }
+    end
+    for _, name in ipairs(primary) do push(name) end
+    for _, name in ipairs(secondary) do push(name) end
+    return list
+end
+
+local function Filter(name, icon)
     local check = filters[name]
     if not check then
         check = CreateFrame("CheckButton", nil, window, "UICheckButtonTemplate")
-        check:SetSize(22, 22)
+        check:SetSize(24, 24)
+        -- Kept for tests / accessibility; the icon is what the player sees.
         check.label = check:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        check.label:SetPoint("LEFT", check, "RIGHT", 0, 1)
-        check.label:SetWidth(FILTER_WIDTH - 24)
-        check.label:SetJustifyH("LEFT")
-        check.label:SetWordWrap(false)
         check.label:SetText(name)
+        check.label:Hide()
+        check.icon = check:CreateTexture(nil, "ARTWORK")
+        check.icon:SetSize(18, 18)
+        check.icon:SetPoint("LEFT", check, "RIGHT", 2, 0)
+        check:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            GameTooltip:SetText(name)
+            GameTooltip:Show()
+        end)
+        check:SetScript("OnLeave", function() GameTooltip:Hide() end)
         check:SetScript("OnClick", function(self)
             ns.char.hiddenProfs[name] = not self:GetChecked() or nil
             Refresh()
         end)
         filters[name] = check
     end
+    if check.icon and icon then check.icon:SetTexture(icon) end
     return check
 end
 
 local function LayoutFilters()
     local shown = tab ~= "beasts"
-    local names = shown and ns.Professions() or {}
+    local list = shown and OrderedProfessions() or {}
     for _, check in pairs(filters) do check:Hide() end
-    for i, name in ipairs(names) do
-        local check = Filter(name)
-        check:ClearAllPoints()
-        check:SetPoint("TOPLEFT", 22 + ((i - 1) % FILTER_COLUMNS) * FILTER_WIDTH,
-            LIST_TOP + 2 - math.floor((i - 1) / FILTER_COLUMNS) * FILTER_HEIGHT)
-        check:SetChecked(not ns.char.hiddenProfs[name])
-        check:Show()
+    local y = FILTER_Y
+    if #list > 0 then
+        for i, entry in ipairs(list) do
+            local check = Filter(entry.name, entry.icon)
+            check:ClearAllPoints()
+            check:SetPoint("TOPLEFT", 22 + (i - 1) * FILTER_SLOT, y)
+            check:SetChecked(not ns.char.hiddenProfs[entry.name])
+            check:Show()
+        end
+        y = y - 28
     end
-    window.scroll:SetPoint("TOPLEFT", 20, LIST_TOP - math.ceil(#names / FILTER_COLUMNS) * FILTER_HEIGHT)
+    if window.collapse and window.expand then
+        window.collapse:ClearAllPoints()
+        window.collapse:SetPoint("TOPLEFT", 22, y)
+        window.expand:ClearAllPoints()
+        window.expand:SetPoint("LEFT", window.collapse, "RIGHT", 4, 0)
+        window.collapse:Show()
+        window.expand:Show()
+        y = y - ACTION_H - 4
+    end
+    window.scroll:SetPoint("TOPLEFT", 20, y)
 end
 
 function Refresh()
@@ -871,14 +1024,20 @@ function Refresh()
                 if active then button.label:SetTextColor(1, 0.82, 0) else button.label:SetTextColor(0.7, 0.7, 0.7) end
             end
         end
+        if window.box then
+            window.box:ClearAllPoints()
+            window.box:SetPoint("TOPLEFT", 26, SEARCH_Y)
+        end
         if tab == "beasts" then
             window.view:SetText(ns.db.beastView == "kind" and L.BOOK_BY_PLACE or L.BOOK_BY_KIND)
             window.view:Show()
+            if window.box then window.box:SetPoint("RIGHT", window.view, "LEFT", -8, 0) end
             local hasLoot = next(ns.db.loot and ns.db.loot.sources or {}) ~= nil
             if hasLoot and not search then window.clearAll:Show() else window.clearAll:Hide() end
             window.scroll:SetPoint("BOTTOMRIGHT", -36, hasLoot and not search and 48 or 18)
         else
             window.view:Hide()
+            if window.box then window.box:SetPoint("RIGHT", window, "RIGHT", -20, 0) end
             window.clearAll:Hide()
             window.scroll:SetPoint("BOTTOMRIGHT", -36, 18)
         end
@@ -909,8 +1068,7 @@ local function Build()
     frame:EnableMouse(true)
     frame:SetMovable(true)
     frame:RegisterForDrag("LeftButton")
-    frame:SetScript("OnDragStart", frame.StartMoving)
-    frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+    -- Drag scripts are wired after the shopping window exists, so both panes move together.
     frame:SetBackdrop({
         bgFile = [[Interface\DialogFrame\UI-DialogBox-Background-Dark]],
         edgeFile = [[Interface\DialogFrame\UI-DialogBox-Border]],
@@ -969,6 +1127,8 @@ local function Build()
     shop:SetFrameStrata("HIGH")
     shop:SetClampedToScreen(true)
     shop:EnableMouse(true)
+    shop:SetMovable(true)
+    shop:RegisterForDrag("LeftButton")
     shop:SetBackdrop({
         bgFile = [[Interface\DialogFrame\UI-DialogBox-Background-Dark]],
         edgeFile = [[Interface\DialogFrame\UI-DialogBox-Border]],
@@ -978,14 +1138,51 @@ local function Build()
         insets = { left = 11, right = 12, top = 12, bottom = 11 },
     })
     if UISpecialFrames then table.insert(UISpecialFrames, "EasyRecipeShop") end
+
+    -- Drag either pane: with both open the book leads (list is anchored to it);
+    -- with only the list open, dragging parks the book under it for the next unfold.
+    local function DragStart()
+        if foldBook and shop:IsShown() then
+            shop:StartMoving()
+        else
+            frame:StartMoving()
+        end
+    end
+    local function DragStop()
+        frame:StopMovingOrSizing()
+        shop:StopMovingOrSizing()
+        if foldBook and shop:IsShown() then
+            local left, top = shop:GetLeft(), shop:GetTop()
+            if left and top then
+                frame:ClearAllPoints()
+                frame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
+                shop:ClearAllPoints()
+                shop:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+            end
+        end
+    end
+    frame:SetScript("OnDragStart", DragStart)
+    frame:SetScript("OnDragStop", DragStop)
+    shop:SetScript("OnDragStart", DragStart)
+    shop:SetScript("OnDragStop", DragStop)
     local shopTitle = shop:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     shopTitle:SetPoint("TOP", 0, -18)
     shopTitle:SetText(L.BOOK_SHOP)
+    local function CloseSession()
+        -- Remember foldBook/foldShop for the next open; only the session ends.
+        sessionOpen = false
+        local keepBook, keepShop = foldBook, foldShop
+        foldBook = false
+        frame:Hide()
+        shop:Hide()
+        foldBook, foldShop = keepBook, keepShop
+        if frame.bookFold then frame.bookFold:Hide() end
+        if frame.shopFold then frame.shopFold:Hide() end
+    end
+
     local shopClose = CreateFrame("Button", nil, shop, "UIPanelCloseButton")
     shopClose:SetPoint("TOPRIGHT", -6, -6)
-    shopClose:SetScript("OnClick", function()
-        frame:Hide()
-    end)
+    shopClose:SetScript("OnClick", CloseSession)
     shop.close = shopClose
     shopClose:Hide()
     local clearShop = CreateFrame("Button", nil, shop, "UIPanelButtonTemplate")
@@ -1016,9 +1213,8 @@ local function Build()
     end)
 
     frame:SetScript("OnHide", function()
-        if foldBook then return end
+        if foldBook and sessionOpen then return end
         sessionOpen = false
-        foldShop = false
         shop:Hide()
         if frame.bookFold then frame.bookFold:Hide() end
         if frame.shopFold then frame.shopFold:Hide() end
@@ -1026,7 +1222,8 @@ local function Build()
     shop:SetScript("OnHide", function()
         if foldShop then return end
         if foldBook then
-            foldBook, sessionOpen = false, false
+            -- Esc closed the list while the book was folded: end session, keep folds.
+            sessionOpen = false
             if frame.bookFold then frame.bookFold:Hide() end
             if frame.shopFold then frame.shopFold:Hide() end
             return
@@ -1038,13 +1235,33 @@ local function Build()
         end
     end)
 
+    local collapse = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    collapse:SetSize(100, 22)
+    collapse:SetText(L.BOOK_COLLAPSE_ALL)
+    collapse:SetScript("OnClick", function()
+        ns.SetBookExpanded(false)
+        Refresh()
+    end)
+    frame.collapse = collapse
+
+    local expand = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    expand:SetSize(100, 22)
+    expand:SetText(L.BOOK_EXPAND_ALL)
+    expand:SetScript("OnClick", function()
+        ns.SetBookExpanded(true)
+        Refresh()
+    end)
+    frame.expand = expand
+
     -- A plain input box: SearchBoxTemplate is Blizzard UI on some clients and
     -- can throw "only available to the Blizzard UI".
     local box = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
-    box:SetSize(WIDTH - 170, 20)
-    box:SetPoint("TOPLEFT", 26, -74)
+    box:SetHeight(20)
+    box:SetPoint("TOPLEFT", 26, SEARCH_Y)
+    box:SetPoint("RIGHT", frame, "RIGHT", -20, 0)
     box:SetAutoFocus(false)
     box:SetTextInsets(8, 8, 0, 0)
+    frame.box = box
     local hint = box:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     hint:SetPoint("LEFT", 10, 0)
     hint:SetText(L.BOOK_SEARCH)
@@ -1061,8 +1278,8 @@ local function Build()
     box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
 
     local view = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    view:SetSize(120, 22)
-    view:SetPoint("TOPRIGHT", -20, -73)
+    view:SetSize(100, 22)
+    view:SetPoint("TOPRIGHT", -20, SEARCH_Y + 1)
     view:SetScript("OnClick", function()
         ns.SetBeastView(ns.db.beastView == "kind" and "place" or "kind")
         Refresh()
@@ -1078,7 +1295,7 @@ local function Build()
     frame.clearAll = clearAll
 
     local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 20, LIST_TOP)
+    scroll:SetPoint("TOPLEFT", 20, FILTER_Y - 56)
     scroll:SetPoint("BOTTOMRIGHT", -36, 18)
     frame.scroll = scroll
     content = CreateFrame("Frame", nil, scroll)
@@ -1098,11 +1315,16 @@ function ns.ToggleBook()
     -- Kept only once complete, so a failed build is not shown half made.
     window = window or Build()
     if sessionOpen then
-        sessionOpen, foldBook, foldShop = false, false, false
+        sessionOpen = false
+        local keepBook, keepShop = foldBook, foldShop
+        foldBook = false
         window:Hide()
         if window.shop then window.shop:Hide() end
+        foldBook, foldShop = keepBook, keepShop
+        if window.bookFold then window.bookFold:Hide() end
+        if window.shopFold then window.shopFold:Hide() end
     else
-        sessionOpen, foldBook, foldShop = true, false, false
+        sessionOpen = true
         window:Show()
     end
 end

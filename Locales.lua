@@ -82,12 +82,15 @@ local L = {
     BOOK_SHOP = "Shopping List",
     BOOK_SHOP_EMPTY = "Click [+] on a recipe to add it.",
     BOOK_SHOP_NEED = "To buy",
-    BOOK_SHOP_HAVE = "have %d",
+    BOOK_SHOP_HAVE = "%d / %d",
+    BOOK_SHOP_HAVE_TIP = "%d in bags, %d in the bank",
     BOOK_SHOP_CLEAR = "Clear list",
     BOOK_HIDE_SHOP = "Hide shopping list",
     BOOK_SHOW_SHOP = "Show shopping list",
     BOOK_HIDE_BOOK = "Hide recipe book",
     BOOK_SHOW_BOOK = "Show recipe book",
+    BOOK_EXPAND_ALL = "Expand all",
+    BOOK_COLLAPSE_ALL = "Collapse all",
     INTRO_TITLE = "Welcome to EasyRecipe",
     INTRO_TEXT = "EasyRecipe learns along with your character: it starts empty and fills in as you play.\n\n"
         .. "1. Open each of your profession windows once, so your recipes can be recorded.\n\n"
@@ -191,12 +194,15 @@ if GetLocale() == "ptBR" then
     L.BOOK_SHOP = "Lista de Compras"
     L.BOOK_SHOP_EMPTY = "Clique em [+] numa receita para adicionar."
     L.BOOK_SHOP_NEED = "A comprar"
-    L.BOOK_SHOP_HAVE = "tem %d"
+    L.BOOK_SHOP_HAVE = "%d / %d"
+    L.BOOK_SHOP_HAVE_TIP = "%d na bolsa, %d no banco"
     L.BOOK_SHOP_CLEAR = "Limpar lista"
     L.BOOK_HIDE_SHOP = "Esconder lista de compras"
     L.BOOK_SHOW_SHOP = "Mostrar lista de compras"
     L.BOOK_HIDE_BOOK = "Esconder livro de receitas"
     L.BOOK_SHOW_BOOK = "Mostrar livro de receitas"
+    L.BOOK_EXPAND_ALL = "Expandir tudo"
+    L.BOOK_COLLAPSE_ALL = "Recolher tudo"
     L.INTRO_TITLE = "Bem-vindo ao EasyRecipe"
     L.INTRO_TEXT = "O EasyRecipe aprende junto com o seu personagem: começa vazio e vai se completando enquanto você joga.\n\n"
         .. "1. Abra a janela de cada profissão uma vez, para que suas receitas sejam registradas.\n\n"

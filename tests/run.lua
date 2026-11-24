@@ -1079,6 +1079,12 @@ for _, row in ipairs(totals) do byID[row.itemID] = row end
 equal(byID[COPPER_BAR].need, 12, "shopping totals reagents by how many crafts")
 equal(byID[FLUX].need, 4, "and every reagent")
 check(byID[COPPER_BAR].buy >= 0 and byID[FLUX].buy >= 0, "buy is need minus what is held")
+game.bags[COPPER_BAR], game.bank[COPPER_BAR] = 3, 5
+totals = ns.ShopTotals()
+byID = {}
+for _, row in ipairs(totals) do byID[row.itemID] = row end
+equal(byID[COPPER_BAR].bags, 3, "shopping shows bags apart")
+equal(byID[COPPER_BAR].bank, 5, "and the bank apart")
 ns.ShopClear()
 equal(#ns.ShopList(), 0, "the shopping list clears")
 
