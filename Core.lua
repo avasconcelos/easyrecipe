@@ -115,8 +115,22 @@ local function InitDB()
     if type(EasyRecipeCharDB) ~= "table" then EasyRecipeCharDB = {} end
     local char = EasyRecipeCharDB
     if type(char.recipes) ~= "table" then char.recipes = {} end
-    -- Profession name -> true for the professions left out of the tooltip.
+    -- Profession name -> true for the professions left out of the tooltip
+    -- (and the options panel). The book's icon row has its own table.
     if type(char.hiddenProfs) ~= "table" then char.hiddenProfs = {} end
+    if type(char.bookHiddenProfs) ~= "table" then char.bookHiddenProfs = {} end
+    -- Older builds wrote the book icons into hiddenProfs, which also hid
+    -- recipes from tooltips (Mild Spices → Cooking, Forever potions → First Aid).
+    -- Move them once so decluttering the book no longer blanks reagent tips.
+    if not char.bookFilterSplit then
+        char.bookFilterSplit = true
+        if next(char.hiddenProfs) then
+            for name, v in pairs(char.hiddenProfs) do
+                char.bookHiddenProfs[name] = char.bookHiddenProfs[name] or v
+            end
+            wipe(char.hiddenProfs)
+        end
+    end
     -- itemID -> how many the bank held when it was last open.
     if type(char.bank) ~= "table" then char.bank = {} end
     for recipeID, recipe in pairs(char.recipes) do

@@ -46,7 +46,7 @@ local L = {
     STATUS_LOOT = "Loot recorded from %d kinds of creatures and %d fishing spots.",
     LOOT_RESET = "loot records cleared.",
     OPT_PROFESSIONS = "Professions of this character",
-    OPT_PROFESSION_TIP = "List the recipes of this profession.",
+    OPT_PROFESSION_TIP = "Show this profession in the recipe book. Tooltips always list every recipe that uses a reagent.",
     MINIMAP_LEFT = "Left-click: recipe book",
     MINIMAP_RIGHT = "Right-click: options",
     OPENED_FROM = "%s (from %s)",
@@ -158,7 +158,7 @@ if GetLocale() == "ptBR" then
     L.STATUS_LOOT = "Saque registrado de %d tipos de criatura e %d lugares de pesca."
     L.LOOT_RESET = "registros de saque apagados."
     L.OPT_PROFESSIONS = "Profissões deste personagem"
-    L.OPT_PROFESSION_TIP = "Lista as receitas desta profissão."
+    L.OPT_PROFESSION_TIP = "Mostra esta profissão no livro de receitas. Tooltips sempre listam toda receita que usa o reagente."
     L.MINIMAP_LEFT = "Clique esquerdo: livro de receitas"
     L.MINIMAP_RIGHT = "Clique direito: opções"
     L.OPENED_FROM = "%s (de %s)"

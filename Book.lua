@@ -262,8 +262,11 @@ end
 local function RecipeLines(lines, mode)
     -- profession -> recipe IDs, and how many times each can be made
     local byProfession, times = {}, {}
+    -- Profession filters only declutter the book; tooltips ignore them.
+    local bookHidden, optHidden = ns.char.bookHiddenProfs, ns.char.hiddenProfs
     for recipeID, recipe in pairs(ns.recipes) do
-        if ns.IsListed(recipe) and RecipeFound(recipe) then
+        local prof = recipe.prof
+        if ns.IsListed(recipe) and not (prof and (bookHidden[prof] or optHidden[prof])) and RecipeFound(recipe) then
             local count, any = Craftable(recipe)
             if mode == "all" or (mode == "craftable" and count > 0) or (mode == "almost" and count == 0 and any) then
                 if ns.RecipeName then ns.RecipeName(recipeID) end
@@ -950,7 +953,8 @@ local function Filter(name, icon)
         end)
         check:SetScript("OnLeave", function() GameTooltip:Hide() end)
         check:SetScript("OnClick", function(self)
-            ns.char.hiddenProfs[name] = not self:GetChecked() or nil
+            -- Book view only; reagent tooltips always list every known use.
+            ns.char.bookHiddenProfs[name] = not self:GetChecked() or nil
             Refresh()
         end)
         filters[name] = check
@@ -969,7 +973,7 @@ local function LayoutFilters()
             local check = Filter(entry.name, entry.icon)
             check:ClearAllPoints()
             check:SetPoint("TOPLEFT", 22 + (i - 1) * FILTER_SLOT, y)
-            check:SetChecked(not ns.char.hiddenProfs[entry.name])
+            check:SetChecked(not ns.char.bookHiddenProfs[entry.name])
             check:Show()
         end
         y = y - 28

@@ -18,6 +18,29 @@ local function IsBasicReagentSlot(slot)
     return true
 end
 
+-- Classic reagent helpers (by recipeID). Forever schematics sometimes only
+-- fill a subset of slots; when these answer, prefer them.
+local function ReadClassicReagents(recipeID, into)
+    if not (C.GetRecipeNumReagents and C.GetRecipeReagentItemLink) then return false end
+    local okNum, num = pcall(C.GetRecipeNumReagents, recipeID)
+    if not okNum or type(num) ~= "number" or num <= 0 then return false end
+    local any = false
+    for i = 1, num do
+        local okLink, link = pcall(C.GetRecipeReagentItemLink, recipeID, i)
+        local itemID = okLink and type(link) == "string" and tonumber(link:match("item:(%d+)"))
+        local count = 1
+        if C.GetRecipeReagentInfo then
+            local okInfo, _, _, qty = pcall(C.GetRecipeReagentInfo, recipeID, i)
+            if okInfo and type(qty) == "number" and qty > 0 then count = qty end
+        end
+        if itemID then
+            into[itemID] = (into[itemID] or 0) + count
+            any = true
+        end
+    end
+    return any
+end
+
 -- True when C_TradeSkillUI has the function and it answers true.
 local function Flag(name)
     local fn = C[name]
@@ -147,7 +170,8 @@ local scratch = {}
 local function ReadRecipe(recipeID, entry, profession, learned)
     local okInfo, info = pcall(C.GetRecipeInfo, recipeID)
     if not okInfo or type(info) ~= "table" then return end
-    if not (learned or info.learned) then return end
+    -- Forever may omit `learned` on craftable recipes still listed as known.
+    if not learned and info.learned == false then return end
     if info.isDummyRecipe or info.isGatheringRecipe or info.isRecraft or info.isSalvageRecipe then return end
 
     local okSchematic, schematic = pcall(C.GetRecipeSchematic, recipeID, false)
@@ -156,33 +180,18 @@ local function ReadRecipe(recipeID, entry, profession, learned)
     if type(slots) ~= "table" then return end
 
     wipe(scratch)
-    for _, slot in ipairs(slots) do
-        local quantity = slot.quantityRequired
-        if IsBasicReagentSlot(slot)
-            and type(quantity) == "number" and quantity > 0 and type(slot.reagents) == "table" then
-            for _, reagent in ipairs(slot.reagents) do
-                local itemID = reagent.itemID
-                if type(itemID) == "number" and itemID > 0 then
-                    scratch[itemID] = (scratch[itemID] or 0) + quantity
-                end
-            end
-        end
-    end
-    -- Some Forever builds give an empty schematic: fall back to the classic
-    -- reagent helpers when the window is open.
-    if next(scratch) == nil and C.GetRecipeNumReagents and C.GetRecipeReagentItemLink then
-        local okNum, num = pcall(C.GetRecipeNumReagents, recipeID)
-        if okNum and type(num) == "number" then
-            for i = 1, num do
-                local okLink, link = pcall(C.GetRecipeReagentItemLink, recipeID, i)
-                local itemID = okLink and type(link) == "string" and tonumber(link:match("item:(%d+)"))
-                local count = 1
-                if C.GetRecipeReagentInfo then
-                    local okInfo, _, _, qty = pcall(C.GetRecipeReagentInfo, recipeID, i)
-                    if okInfo and type(qty) == "number" and qty > 0 then count = qty end
-                end
-                if itemID then
-                    scratch[itemID] = (scratch[itemID] or 0) + count
+    -- Classic reagent APIs first: Forever schematics sometimes only expose a
+    -- subset of the real reagents (e.g. the vial but not the herb).
+    if not ReadClassicReagents(recipeID, scratch) then
+        for _, slot in ipairs(slots) do
+            local quantity = slot.quantityRequired or 1
+            if IsBasicReagentSlot(slot)
+                and type(quantity) == "number" and quantity > 0 and type(slot.reagents) == "table" then
+                for _, reagent in ipairs(slot.reagents) do
+                    local itemID = tonumber(reagent.itemID)
+                    if itemID and itemID > 0 then
+                        scratch[itemID] = (scratch[itemID] or 0) + quantity
+                    end
                 end
             end
         end
@@ -221,6 +230,15 @@ function ns.Scan()
     for _, recipeID in ipairs(recipeIDs) do
         local entry = ReadRecipe(recipeID, recipes[recipeID], profession)
         if entry then recipes[recipeID] = entry end
+    end
+    -- The selected recipe is fully loaded in the craft form; Forever may only
+    -- fill its schematic then, so re-read it even if GetAllRecipeIDs already ran.
+    if C.GetSelectedRecipeID then
+        local okSel, selected = pcall(C.GetSelectedRecipeID)
+        if okSel and type(selected) == "number" and selected > 0 then
+            local entry = ReadRecipe(selected, recipes[selected], profession, true)
+            if entry then recipes[selected] = entry end
+        end
     end
     ns.RebuildIndex()
     ns.AddProfessionOptions()

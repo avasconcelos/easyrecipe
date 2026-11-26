@@ -13,11 +13,11 @@ ns.DIFFICULTY_COLOR, ns.NO_DIFFICULTY_COLOR = DIFFICULTY_COLOR, NO_DIFFICULTY_CO
 -- The setting that lists the recipes of each difficulty.
 local DIFFICULTY_SETTING = { [0] = "showOptimal", [1] = "showMedium", [2] = "showEasy", [3] = "showTrivial" }
 
--- Whether the player's filters let a recipe into the tooltip.
-local function IsListed(recipe, db, hiddenProfs, lowest, highest)
+-- Difficulty / level gates for tips and the book. Profession filters never
+-- apply here: a reagent tip is just "which of my recipes use this item".
+local function IsListed(recipe, db, lowest, highest)
     local setting = DIFFICULTY_SETTING[recipe.diff]
     if setting and not db[setting] then return false end
-    if recipe.prof and hiddenProfs[recipe.prof] then return false end
     -- Level 0 is an item anyone can use, and no level is an item the game has
     -- not described yet: neither is in or out of a range.
     local level = recipe.lvl
@@ -25,10 +25,9 @@ local function IsListed(recipe, db, hiddenProfs, lowest, highest)
     return true
 end
 
--- The same filters, for the recipe book.
 function ns.IsListed(recipe)
     local db = ns.db
-    return IsListed(recipe, db, ns.char.hiddenProfs,
+    return IsListed(recipe, db,
         math.min(db.minLevel, db.maxLevel), math.max(db.minLevel, db.maxLevel))
 end
 
@@ -36,14 +35,14 @@ local function AddRecipeLines(tooltip, itemID, db)
     local list = ns.RecipesFor(itemID)
     if not list then return end
 
-    local recipes, hiddenProfs = ns.recipes, ns.char.hiddenProfs
+    local recipes = ns.recipes
     local lowest, highest = math.min(db.minLevel, db.maxLevel), math.max(db.minLevel, db.maxLevel)
     local limit = IsShiftKeyDown() and ns.HARD_CAP or db.maxLines
     -- Recipes of one profession are adjacent, so its name is a line above them.
     local listed, profession = 0, nil
     for i = 1, #list do
         local recipe = recipes[list[i]]
-        if IsListed(recipe, db, hiddenProfs, lowest, highest) then
+        if IsListed(recipe, db, lowest, highest) then
             listed = listed + 1
             if listed == 1 then
                 tooltip:AddLine(" ")
@@ -66,6 +65,40 @@ local function AddRecipeLines(tooltip, itemID, db)
     end
 end
 
+local function IsSecret(value)
+    return issecretvalue ~= nil and issecretvalue(value)
+end
+
+-- Bank, herb bags and Forever tips may omit a numeric data.id.
+local function ItemIDFromTooltip(tooltip, data)
+    local id = data and data.id
+    if type(id) == "string" then id = tonumber(id) end
+    if type(id) == "number" and id > 0 and not IsSecret(id) then return id end
+
+    local guid = data and data.guid
+    if type(guid) == "string" and not IsSecret(guid)
+        and C_Item and C_Item.GetItemIDByGUID then
+        local ok, fromGuid = pcall(C_Item.GetItemIDByGUID, guid)
+        if ok and type(fromGuid) == "number" and fromGuid > 0 and not IsSecret(fromGuid) then
+            return fromGuid
+        end
+    end
+
+    local link = data and (data.hyperlink or data.link)
+    if type(link) == "string" then
+        local fromData = tonumber(link:match("item:(%d+)"))
+        if fromData then return fromData end
+    end
+
+    if tooltip.GetItem then
+        local ok, _, tipLink = pcall(tooltip.GetItem, tooltip)
+        if ok and type(tipLink) == "string" then
+            local fromTip = tonumber(tipLink:match("item:(%d+)"))
+            if fromTip then return fromTip end
+        end
+    end
+end
+
 -- Lines are only ever added: the tooltip's owner, anchor and visibility belong
 -- to the game and to UI addons such as EllesmereUI.
 local function OnItemTooltip(tooltip, data)
@@ -74,14 +107,8 @@ local function OnItemTooltip(tooltip, data)
     if tooltip ~= GameTooltip and tooltip ~= ItemRefTooltip then return end
     if tooltip.IsForbidden and tooltip:IsForbidden() then return end
 
-    local itemID = data and data.id
-    -- Herb bags and some Forever container tips omit data.id; the link still has it.
-    if (itemID == nil or (issecretvalue and issecretvalue(itemID)) or type(itemID) ~= "number")
-        and tooltip.GetItem then
-        local ok, _, link = pcall(tooltip.GetItem, tooltip)
-        if ok and type(link) == "string" then itemID = tonumber(link:match("item:(%d+)")) end
-    end
-    if itemID == nil or (issecretvalue and issecretvalue(itemID)) or type(itemID) ~= "number" then return end
+    local itemID = ItemIDFromTooltip(tooltip, data)
+    if not itemID then return end
     if db.enabled then AddRecipeLines(tooltip, itemID, db) end
     ns.AddDropLines(tooltip, itemID)
 end

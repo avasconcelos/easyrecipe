@@ -312,6 +312,22 @@ local function InstallGame()
             end
             return { recipeID = id, name = r.name, icon = r.icon, outputItemID = r.out, reagentSlotSchematics = slots }
         end,
+        GetRecipeNumReagents = function(id)
+            local list = game.classicReagents and game.classicReagents[id]
+            return list and #list or 0
+        end,
+        GetRecipeReagentItemLink = function(id, i)
+            local list = game.classicReagents and game.classicReagents[id]
+            local row = list and list[i]
+            return row and ("item:" .. row[1]) or nil
+        end,
+        GetRecipeReagentInfo = function(id, i)
+            local list = game.classicReagents and game.classicReagents[id]
+            local row = list and list[i]
+            if not row then return end
+            return "Reagent", 134400, row[2], 0
+        end,
+        GetSelectedRecipeID = function() return game.selectedRecipe end,
     }
     local function NewTooltip()
         local tooltip = { lines = {}, forbidden = false }
@@ -387,10 +403,10 @@ local function RunTimers()
     return #timers
 end
 
-local function Hover(itemID, tooltip)
+local function Hover(itemID, tooltip, data)
     tooltip = tooltip or GameTooltip
     tooltip.lines = {}
-    for _, fn in ipairs(game.postCalls[0] or {}) do fn(tooltip, { type = 0, id = itemID }) end
+    for _, fn in ipairs(game.postCalls[0] or {}) do fn(tooltip, data or { type = 0, id = itemID }) end
     return tooltip.lines
 end
 
@@ -481,6 +497,43 @@ game.ready = false
 check(HasLine(Hover(PEACEBLOOM), "Minor Mana Potion"), "Forever basic slots without required still index herbs")
 game.recipes[2331] = nil
 ns.recipes[2331] = nil
+ns.RebuildIndex()
+
+-- Forever may omit quantityRequired; treat it as 1.
+local BRIARTHORN = 2450
+game.recipes[2337] = { name = "Lesser Healing Potion", icon = 134779, learned = true, diff = 0, out = 858,
+    slots = {
+        { type = 1, required = false, qty = nil, items = { BRIARTHORN } },
+        { type = 1, required = false, qty = nil, items = { 3371 } },
+    } }
+game.ready = true
+OpenProfession()
+game.ready = false
+check(HasLine(Hover(BRIARTHORN), "Lesser Healing Potion"), "Forever slots without quantityRequired still index")
+-- Classic reagent APIs win when the schematic only exposes a subset.
+game.classicReagents = {
+    [2337] = { { BRIARTHORN, 1 }, { 2678, 2 }, { 3371, 1 } },
+}
+game.recipes[2337].slots = {
+    { type = 1, required = false, qty = 1, items = { 3371 } },
+}
+game.ready = true
+OpenProfession()
+game.ready = false
+check(HasLine(Hover(BRIARTHORN), "Lesser Healing Potion"), "classic reagent APIs fill herbs the schematic omitted")
+check(HasLine(Hover(2678), "Lesser Healing Potion"), "classic reagent APIs also index Mild Spices")
+-- Bank-style tip: id as string, or only a GUID.
+check(HasLine(Hover(nil, nil, { type = 0, id = tostring(BRIARTHORN) }), "Lesser Healing Potion"),
+    "tooltip accepts a string item id")
+game.itemGUIDs = game.itemGUIDs or {}
+game.itemGUIDs["Item-0-0-0-0-0-2450-0"] = BRIARTHORN
+C_Item = C_Item or {}
+C_Item.GetItemIDByGUID = function(guid) return game.itemGUIDs[guid] end
+check(HasLine(Hover(nil, nil, { type = 0, guid = "Item-0-0-0-0-0-2450-0" }), "Lesser Healing Potion"),
+    "tooltip resolves a bank item from its GUID")
+game.classicReagents = nil
+game.recipes[2337] = nil
+ns.recipes[2337] = nil
 ns.RebuildIndex()
 equal(#Hover(LINEN), 0, "unrelated item is untouched")
 
@@ -723,11 +776,10 @@ OpenProfession()
 equal(game.controls[19], "checkbox:Engineering", "a profession scanned later gets its checkbox right away")
 equal(#Hover(COPPER_BAR), 8, "both professions listed")
 SetOption("profession_Engineering", false)
-lines = Hover(COPPER_BAR)
-check(#lines == 6 and not HasLine(lines, "Engineering"), "a profession can be left out")
 equal(EasyRecipeCharDB.hiddenProfs.Engineering, true, "the choice is saved with the character")
+check(HasLine(Hover(COPPER_BAR), "Engineering"), "options do not hide professions from reagent tooltips")
 SetOption("profession_Blacksmithing", false)
-equal(#Hover(COPPER_BAR), 0, "nothing listed: no header either")
+check(HasLine(Hover(COPPER_BAR), "Copper Axe"), "tooltips still list blacksmithing uses")
 SetOption("profession_Engineering", true)
 SetOption("profession_Blacksmithing", true)
 equal(next(EasyRecipeCharDB.hiddenProfs), nil, "listing them again leaves nothing saved")
@@ -1074,12 +1126,35 @@ end
 check(filter and filter.shown, "the recipe tabs have a checkbox per profession")
 filter.GetChecked = function() return false end
 filter.scripts.OnClick(filter)
-check(EasyRecipeCharDB.hiddenProfs.Blacksmithing and not BookLine("all", "Copper Axe"), "unchecked, the profession is hidden")
+check(EasyRecipeCharDB.bookHiddenProfs.Blacksmithing and not BookLine("all", "Copper Axe"),
+    "unchecked, the profession is hidden in the book")
+check(not EasyRecipeCharDB.hiddenProfs.Blacksmithing and HasLine(Hover(COPPER_BAR), "Copper Axe"),
+    "book filters do not hide the same profession from tooltips")
 filter.GetChecked = function() return true end
 filter.scripts.OnClick(filter)
 check(BookLine("all", "Copper Axe"), "checked again, it is back")
 Click("Bestiary")
 check(not filter.shown, "the Bestiary tab has none")
+
+-- Forever: a potion under First Aid must still tip when only the book hid it.
+local BRIAR = 2450
+ns.recipes[1244432] = {
+    name = "Lesser Healing Potion", icon = 134830, diff = 0, prof = "First Aid",
+    out = 858, lvl = 3, reagents = { [BRIAR] = 1, [3371] = 1, [2678] = 2 },
+}
+ns.RebuildIndex()
+EasyRecipeCharDB.bookHiddenProfs["First Aid"] = true
+EasyRecipeCharDB.hiddenProfs["First Aid"] = nil
+check(HasLine(Hover(BRIAR), "Lesser Healing Potion"),
+    "First Aid potion still tips when the book filter hides First Aid")
+EasyRecipeCharDB.hiddenProfs["First Aid"] = true
+check(HasLine(Hover(BRIAR), "Lesser Healing Potion"),
+    "options also leave First Aid on reagent tooltips")
+check(not BookLine("all", "Lesser Healing Potion"), "options can hide First Aid from the book")
+EasyRecipeCharDB.hiddenProfs["First Aid"] = nil
+EasyRecipeCharDB.bookHiddenProfs["First Aid"] = nil
+ns.recipes[1244432] = nil
+ns.RebuildIndex()
 
 -- Shopping list on Almost / All: pick recipes, set how many, total what to buy.
 ns.ShopClear()
