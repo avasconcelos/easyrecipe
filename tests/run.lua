@@ -467,6 +467,21 @@ equal(lines[5][2], "6x", "quantity of the second recipe")
 equal(lines[6][1], "|T134583:0|t Copper Chain Pants", "then easy")
 equal(#Hover(COARSE_STONE), 0, "an optional reagent slot is not a use")
 equal(#Hover(FLUX), 4, "second reagent of a recipe is indexed too")
+
+-- Forever alchemy-style: basic slots may omit required=true.
+local PEACEBLOOM = 2447
+game.recipes[2331] = { name = "Minor Mana Potion", icon = 134851, learned = true, diff = 1, out = 2455,
+    slots = {
+        { type = 1, required = false, qty = 1, items = { PEACEBLOOM } },
+        { type = 1, required = false, qty = 1, items = { 785 } },
+    } }
+game.ready = true
+OpenProfession()
+game.ready = false
+check(HasLine(Hover(PEACEBLOOM), "Minor Mana Potion"), "Forever basic slots without required still index herbs")
+game.recipes[2331] = nil
+ns.recipes[2331] = nil
+ns.RebuildIndex()
 equal(#Hover(LINEN), 0, "unrelated item is untouched")
 
 -- Tooltips that must be left alone.

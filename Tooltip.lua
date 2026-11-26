@@ -75,6 +75,12 @@ local function OnItemTooltip(tooltip, data)
     if tooltip.IsForbidden and tooltip:IsForbidden() then return end
 
     local itemID = data and data.id
+    -- Herb bags and some Forever container tips omit data.id; the link still has it.
+    if (itemID == nil or (issecretvalue and issecretvalue(itemID)) or type(itemID) ~= "number")
+        and tooltip.GetItem then
+        local ok, _, link = pcall(tooltip.GetItem, tooltip)
+        if ok and type(link) == "string" then itemID = tonumber(link:match("item:(%d+)")) end
+    end
     if itemID == nil or (issecretvalue and issecretvalue(itemID)) or type(itemID) ~= "number" then return end
     if db.enabled then AddRecipeLines(tooltip, itemID, db) end
     ns.AddDropLines(tooltip, itemID)

@@ -7,6 +7,17 @@ local BASIC = Enum and Enum.CraftingReagentType and Enum.CraftingReagentType.Bas
 -- Events arrive in bursts (one per craft), so a scan waits for them to settle.
 local SCAN_DELAY = 0.5
 
+-- Forever often leaves `required` unset on classic reagent slots; treat nil /
+-- Basic as a real reagent, and skip finishing / modifying slots.
+local function IsBasicReagentSlot(slot)
+    local t = slot.reagentType
+    if BASIC ~= nil then
+        return t == nil or t == BASIC
+    end
+    if slot.required == false then return false end
+    return true
+end
+
 -- True when C_TradeSkillUI has the function and it answers true.
 local function Flag(name)
     local fn = C[name]
@@ -147,13 +158,31 @@ local function ReadRecipe(recipeID, entry, profession, learned)
     wipe(scratch)
     for _, slot in ipairs(slots) do
         local quantity = slot.quantityRequired
-        -- Optional and finishing slots are left out: the recipe works without them.
-        if (slot.required or (BASIC ~= nil and slot.reagentType == BASIC))
+        if IsBasicReagentSlot(slot)
             and type(quantity) == "number" and quantity > 0 and type(slot.reagents) == "table" then
             for _, reagent in ipairs(slot.reagents) do
                 local itemID = reagent.itemID
                 if type(itemID) == "number" and itemID > 0 then
                     scratch[itemID] = (scratch[itemID] or 0) + quantity
+                end
+            end
+        end
+    end
+    -- Some Forever builds give an empty schematic: fall back to the classic
+    -- reagent helpers when the window is open.
+    if next(scratch) == nil and C.GetRecipeNumReagents and C.GetRecipeReagentItemLink then
+        local okNum, num = pcall(C.GetRecipeNumReagents, recipeID)
+        if okNum and type(num) == "number" then
+            for i = 1, num do
+                local okLink, link = pcall(C.GetRecipeReagentItemLink, recipeID, i)
+                local itemID = okLink and type(link) == "string" and tonumber(link:match("item:(%d+)"))
+                local count = 1
+                if C.GetRecipeReagentInfo then
+                    local okInfo, _, _, qty = pcall(C.GetRecipeReagentInfo, recipeID, i)
+                    if okInfo and type(qty) == "number" and qty > 0 then count = qty end
+                end
+                if itemID then
+                    scratch[itemID] = (scratch[itemID] or 0) + count
                 end
             end
         end
