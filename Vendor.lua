@@ -119,9 +119,11 @@ function ns.RefreshVendor()
         row.label:SetText((icon and ("|T" .. icon .. ":0|t ") or "") .. (name or ("item:" .. entry.itemID)))
         -- Red: still to buy; green: bags and bank already hold enough.
         if entry.buy > 0 then row.label:SetTextColor(1, 0.3, 0.3) else row.label:SetTextColor(0.25, 1, 0.25) end
-        -- What bags and bank hold together, and what is still to buy; the
-        -- tooltip splits bags from bank.
-        local right = L.VENDOR_COUNTS:format(entry.have, entry.buy)
+        -- What bags and bank hold together, how much of it is in the bank,
+        -- and what is still to buy.
+        local have = L.VENDOR_HAVE:format(entry.have)
+        if entry.bank > 0 then have = have .. " (" .. L.VENDOR_IN_BANK:format(entry.bank) .. ")" end
+        local right = have .. " · " .. L.VENDOR_BUY:format(entry.buy)
         if item.price and item.price > 0 and CoinText then
             -- Vendors sell some items in stacks; the price shown is per item.
             local each = item.price / math.max(1, item.stack or 1)

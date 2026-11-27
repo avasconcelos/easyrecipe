@@ -1160,6 +1160,10 @@ game.bags[FLUX] = 4
 Fire("BAG_UPDATE_DELAYED")
 RunTimers()
 equal(VendorRows()[FLUX], "have 4 · buy 0", "buying updates it")
+game.bags[FLUX], game.bank[FLUX] = 1, 2
+Fire("BAG_UPDATE_DELAYED")
+RunTimers()
+equal(VendorRows()[FLUX], "have 3 (2 in the bank) · buy 1", "what is in the bank is named")
 Fire("MERCHANT_CLOSED")
 check(not vendor.shown, "closing the vendor closes the panel")
 ns.ShopClear()
