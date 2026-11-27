@@ -27,8 +27,25 @@ local tab = "craftable"
 local toggled, headerDefault, expandOverride = {}, {}, nil
 -- What the search box holds, lowercased, or nil.
 local search
--- Shopping list for recipe tabs: recipeID -> how many to make.
+-- Shopping list for recipe tabs: recipeID -> how many to make. Saved per
+-- character (EasyRecipeCharDB.cart) once ns.InitCart has run.
 local cart = {}
+
+function ns.InitCart()
+    local saved = ns.char.cart
+    if type(saved) ~= "table" then saved = {} end
+    for recipeID, qty in pairs(saved) do
+        if type(recipeID) ~= "number" or type(qty) ~= "number" or qty < 1 then
+            saved[recipeID] = nil
+        else
+            saved[recipeID] = math.min(math.floor(qty), 999)
+        end
+    end
+    -- Anything added before the saved variables loaded is kept.
+    for recipeID, qty in pairs(cart) do saved[recipeID] = qty end
+    ns.char.cart = saved
+    cart = saved
+end
 -- Session stays open while one pane is folded away.
 local sessionOpen, foldBook, foldShop = false, false, false
 
@@ -666,6 +683,52 @@ local function ShopRow(i)
     return row
 end
 
+-- The discreet "clear" button both panes use: small, dark gray with a thin
+-- border, in the bottom right corner, lit on hover, with a longer
+-- explanation in its tooltip.
+local function ClearButton(parent, text, tip, onClick)
+    local button = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    button:SetHeight(18)
+    button:SetPoint("BOTTOMRIGHT", -20, 15)
+    button:SetBackdrop({
+        bgFile = [[Interface\Buttons\WHITE8x8]],
+        edgeFile = [[Interface\Buttons\WHITE8x8]],
+        edgeSize = 1,
+    })
+    button.label = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    button.label:SetPoint("CENTER", 0, 0)
+    local function Paint(hover)
+        button.label:SetText((hover and "|cffff3030×|r " or "|cff909090×|r ") .. text)
+        if hover then
+            button.label:SetTextColor(1, 1, 1)
+            button:SetBackdropColor(0.22, 0.22, 0.22, 0.95)
+            button:SetBackdropBorderColor(0.55, 0.55, 0.55, 1)
+        else
+            button.label:SetTextColor(0.7, 0.7, 0.7)
+            button:SetBackdropColor(0.12, 0.12, 0.12, 0.9)
+            button:SetBackdropBorderColor(0.35, 0.35, 0.35, 1)
+        end
+    end
+    Paint(false)
+    button:SetWidth((button.label:GetStringWidth() or 0) + 14)
+    button:SetScript("OnMouseDown", function(self) self.label:SetPoint("CENTER", 1, -1) end)
+    button:SetScript("OnMouseUp", function(self) self.label:SetPoint("CENTER", 0, 0) end)
+    button:SetScript("OnEnter", function(self)
+        Paint(true)
+        if tip then
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            GameTooltip:SetText(tip, 1, 1, 1, 1, true)
+            GameTooltip:Show()
+        end
+    end)
+    button:SetScript("OnLeave", function()
+        Paint(false)
+        GameTooltip:Hide()
+    end)
+    button:SetScript("OnClick", onClick)
+    return button
+end
+
 -- Slim edge tab; red matches Blizzard close-button / RED_FONT_COLOR.
 local function FoldTab(parent)
     local button = CreateFrame("Button", nil, parent, "BackdropTemplate")
@@ -1039,7 +1102,7 @@ function Refresh()
             if window.box then window.box:SetPoint("RIGHT", window.view, "LEFT", -8, 0) end
             local hasLoot = next(ns.db.loot and ns.db.loot.sources or {}) ~= nil
             if hasLoot and not search then window.clearAll:Show() else window.clearAll:Hide() end
-            window.scroll:SetPoint("BOTTOMRIGHT", -36, hasLoot and not search and 48 or 18)
+            window.scroll:SetPoint("BOTTOMRIGHT", -36, hasLoot and not search and 38 or 18)
         else
             window.view:Hide()
             if window.box then window.box:SetPoint("RIGHT", window, "RIGHT", -20, 0) end
@@ -1048,6 +1111,7 @@ function Refresh()
         end
     end
     RefreshShop()
+    if ns.RefreshVendor then ns.Try(ns.RefreshVendor) end
 end
 
 -- Bag updates come in bursts while looting or crafting.
@@ -1190,17 +1254,13 @@ local function Build()
     shopClose:SetScript("OnClick", CloseSession)
     shop.close = shopClose
     shopClose:Hide()
-    local clearShop = CreateFrame("Button", nil, shop, "UIPanelButtonTemplate")
-    clearShop:SetSize(SHOP_WIDTH - 48, 22)
-    clearShop:SetPoint("TOP", 0, -42)
-    clearShop:SetText(L.BOOK_SHOP_CLEAR)
-    clearShop:SetScript("OnClick", function()
-        ns.ShopClear()
-        Refresh()
+    ClearButton(shop, L.BOOK_SHOP_CLEAR, nil, function()
+        if next(cart) == nil then return end
+        Confirm("EASYRECIPE_SHOP_CLEAR", L.BOOK_SHOP_CLEAR_CONFIRM, ns.ShopClear)
     end)
     local shopScroll = CreateFrame("ScrollFrame", nil, shop, "UIPanelScrollFrameTemplate")
-    shopScroll:SetPoint("TOPLEFT", 16, -72)
-    shopScroll:SetPoint("BOTTOMRIGHT", -32, 16)
+    shopScroll:SetPoint("TOPLEFT", 16, -48)
+    shopScroll:SetPoint("BOTTOMRIGHT", -32, 38)
     local shopContent = CreateFrame("Frame", nil, shopScroll)
     shopContent:SetSize(SHOP_WIDTH - 56, 1)
     shopScroll:SetScrollChild(shopContent)
@@ -1291,11 +1351,8 @@ local function Build()
     end)
     frame.view = view
 
-    local clearAll = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    clearAll:SetSize(WIDTH - 60, 24)
-    clearAll:SetPoint("BOTTOM", 0, 16)
-    clearAll:SetText(L.BOOK_FORGET_ALL)
-    clearAll:SetScript("OnClick", function() ns.BookAction("forgetAll") end)
+    local clearAll = ClearButton(frame, L.BOOK_FORGET_ALL_SHORT, L.BOOK_FORGET_ALL,
+        function() ns.BookAction("forgetAll") end)
     clearAll:Hide()
     frame.clearAll = clearAll
 

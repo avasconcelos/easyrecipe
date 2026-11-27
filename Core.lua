@@ -162,6 +162,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2)
         ns.RebuildIndex()
         ns.InitLoot()
         if ns.InitBank then ns.InitBank() end
+        if ns.InitCart then ns.InitCart() end
         if not ns.HookTooltips() then Print(L.NO_TOOLTIP_API) end
         self:RegisterEvent("PLAYER_LOGIN")
         self:RegisterEvent("NEW_RECIPE_LEARNED")

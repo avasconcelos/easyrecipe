@@ -185,6 +185,7 @@ local function InstallGame()
         function widget:IsShown() return self.shown end
         function widget:SetText(text) self.text = text end
         function widget:GetStringHeight() return 120 end
+        function widget:GetFrameLevel() return 1 end
         function widget:CreateFontString() return NewWidget() end
         function widget:CreateTexture() return NewWidget() end
         return setmetatable(widget, { __index = function() return function() end end })
@@ -1115,7 +1116,7 @@ Click("Bestiary")
 Fire("BAG_UPDATE_DELAYED")
 RunTimers()
 check(not Printed("could not be set up"), "the window draws without errors")
-check(book.clearAll and book.clearAll.shown and book.clearAll.text == "Clear everything learned from loot",
+check(book.clearAll and book.clearAll.shown and book.clearAll.label.text:find("Clear bestiary", 1, true),
     "the Bestiary tab has a clear-all button")
 Click("All")
 local filter
@@ -1177,6 +1178,71 @@ equal(byID[COPPER_BAR].bags, 3, "shopping shows bags apart")
 equal(byID[COPPER_BAR].bank, 5, "and the bank apart")
 ns.ShopClear()
 equal(#ns.ShopList(), 0, "the shopping list clears")
+
+-- The shopping list is kept with the character.
+ns.ShopSet(2738, 2)
+equal(EasyRecipeCharDB.cart[2738], 2, "the shopping list is saved with the character")
+ResetGame()
+InstallGame()
+ns = Login()
+equal(ns.ShopList()[1], 2738, "and is back after a reload")
+
+-- Its clear button asks first.
+local function ClearButtonOf(text)
+    for _, frame in ipairs(game.frames) do
+        local label = rawget(frame, "label")
+        if label and type(label.text) == "string" and label.text:find(text, 1, true) and frame.scripts.OnClick then
+            return frame
+        end
+    end
+end
+SlashCmdList.EASYRECIPE("book")
+local clearList = ClearButtonOf("Clear list")
+check(clearList, "the shopping list has a clear button")
+clearList.scripts.OnClick(clearList)
+equal(ns.ShopList()[1], 2738, "clearing the list asks before doing it")
+ConfirmYes()
+equal(#ns.ShopList(), 0, "and clears it on yes")
+SlashCmdList.EASYRECIPE("book")
+
+-- At a vendor, what it sells from the shopping list shows beside its window.
+game.merchant = { FLUX, 4470 }
+MerchantFrame = CreateFrame("Frame", "MerchantFrame")
+GetMerchantNumItems = function() return #game.merchant end
+GetMerchantItemID = function(index) return game.merchant[index] end
+C_MerchantFrame = { GetItemInfo = function() return { price = 100, stackCount = 1 } end }
+local function VendorRows()
+    local found = {}
+    for _, frame in ipairs(game.frames) do
+        local right = rawget(frame, "right")
+        if right and frame.shown and frame.itemID then found[frame.itemID] = right.text end
+    end
+    return found
+end
+Fire("MERCHANT_SHOW")
+RunTimers()
+check(not (Window("EasyRecipeVendor") and Window("EasyRecipeVendor").shown), "no panel with an empty shopping list")
+ns.ShopSet(2738, 2)
+game.bags[FLUX], game.bank[FLUX] = 1, 0
+Fire("MERCHANT_UPDATE")
+RunTimers()
+local vendor = Window("EasyRecipeVendor")
+check(vendor and vendor.shown, "the vendor panel opens for an item on the list")
+local rowsByItem = VendorRows()
+equal(rowsByItem[FLUX], "have 1 · buy 3", "it says what is held and what is still to buy")
+equal(rowsByItem[COPPER_BAR], nil, "items the vendor does not sell are left out")
+game.bags[FLUX] = 4
+Fire("BAG_UPDATE_DELAYED")
+RunTimers()
+equal(VendorRows()[FLUX], "have 4 · buy 0", "buying updates it")
+game.bags[FLUX], game.bank[FLUX] = 1, 2
+Fire("BAG_UPDATE_DELAYED")
+RunTimers()
+equal(VendorRows()[FLUX], "have 3 (2 in the bank) · buy 1", "what is in the bank is named")
+Fire("MERCHANT_CLOSED")
+check(not vendor.shown, "closing the vendor closes the panel")
+ns.ShopClear()
+MerchantFrame, GetMerchantNumItems, GetMerchantItemID, C_MerchantFrame = nil, nil, nil, nil
 
 -- Loot is account-wide and survives a reload.
 ResetGame()
